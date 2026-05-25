@@ -999,18 +999,14 @@ def get_broker_full_portfolio(session: Session = Depends(get_session)):
                 profile = {"user_id": "JBK746", "user_name": "Arulmani .", "email": "jerrymani33@gmail.com"}
 
             margins = {}
+            margins_connected = True
             try:
                 margins = kite_broker.kite_client.margins()
             except Exception as me:
-                logger.warning(f"Zerodha margins API failed (RMS issue): {me}. Falling back to default margin layout.")
-                # Construct a fallback margins structure so the UI works perfectly
-                margins = {
-                    "equity": {
-                        "net": 500000.0,
-                        "available": {"cash": 500000.0},
-                        "utilised": {"debits": 0.0, "liquid_collateral": 0.0}
-                    }
-                }
+                logger.warning(f"Zerodha margins API failed (RMS issue): {me}. Falling back to empty margin layout.")
+                margins_connected = False
+                # Construct a fallback margins structure with 0.0 and connected=False
+                margins = {}
             
             holdings = []
             try:
@@ -1040,7 +1036,8 @@ def get_broker_full_portfolio(session: Session = Depends(get_session)):
                     "cash": float(equity.get("net", 0.0)),
                     "available": float(equity.get("available", {}).get("cash", 0.0)),
                     "used": float(equity.get("utilised", {}).get("debits", 0.0)),
-                    "collateral": float(equity.get("utilised", {}).get("liquid_collateral", 0.0))
+                    "collateral": float(equity.get("utilised", {}).get("liquid_collateral", 0.0)),
+                    "connected": margins_connected
                 },
                 "holdings": [
                     {
@@ -1104,7 +1101,8 @@ def get_broker_full_portfolio(session: Session = Depends(get_session)):
                     "cash": cash,
                     "available": cash,
                     "used": 0.0,
-                    "collateral": 0.0
+                    "collateral": 0.0,
+                    "connected": True if balance else False
                 },
                 "holdings": formatted_holdings
             }
@@ -1124,10 +1122,10 @@ def get_broker_portfolio(session: Session = Depends(get_session)):
     
     broker_name = active_cred.broker_name if active_cred else "kite"
     
-    cash_balance = 500000.0
-    used_margin = 120000.0
-    collateral = 50000.0
-    available_margin = 430000.0
+    cash_balance = 0.0
+    used_margin = 0.0
+    collateral = 0.0
+    available_margin = 0.0
     is_live = False
     
     if broker_name == "kite":

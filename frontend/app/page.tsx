@@ -721,10 +721,21 @@ export default function StockerDashboard() {
               <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Shield size={14} style={{ color: '#10B981' }} /> Live Broker Balances & Portfolio Margins
+                    <Shield size={14} style={{ color: portfolio.is_live ? '#10B981' : '#EF4444' }} /> Live Broker Balances & Portfolio Margins
                   </h3>
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '2px 8px', borderRadius: '4px' }}>
-                    Broker: <b style={{ textTransform: 'uppercase', color: 'var(--text-primary)' }}>{portfolio.broker_name}</b>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '6px', 
+                    color: portfolio.is_live ? '#10B981' : '#EF4444', 
+                    background: portfolio.is_live ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)', 
+                    padding: '4px 10px', 
+                    borderRadius: '6px',
+                    border: portfolio.is_live ? '1px solid rgba(16, 185, 129, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                  }}>
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: portfolio.is_live ? '#10B981' : '#EF4444', display: 'inline-block' }}></span>
+                    {portfolio.is_live ? `CONNECTED: ${portfolio.broker_name.toUpperCase()}` : 'BROKER DISCONNECTED'}
                   </span>
                 </div>
                 
@@ -732,29 +743,29 @@ export default function StockerDashboard() {
                   
                   <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Cash Balance</span>
-                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', fontFamily: 'monospace' }}>
-                      ₹{portfolio.cash_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', fontFamily: 'monospace', color: portfolio.is_live ? '#fff' : 'var(--text-muted)' }}>
+                      {portfolio.is_live ? `₹${portfolio.cash_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </p>
                   </div>
 
                   <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Available Margin</span>
-                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#10B981', fontFamily: 'monospace' }}>
-                      ₹{portfolio.available_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: portfolio.is_live ? '#10B981' : 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {portfolio.is_live ? `₹${portfolio.available_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </p>
                   </div>
 
                   <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Used Margin</span>
-                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#EF4444', fontFamily: 'monospace' }}>
-                      ₹{portfolio.used_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: portfolio.is_live ? '#EF4444' : 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {portfolio.is_live ? `₹${portfolio.used_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </p>
                   </div>
 
                   <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Collateral</span>
-                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#F59E0B', fontFamily: 'monospace' }}>
-                      ₹{portfolio.collateral_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: portfolio.is_live ? '#F59E0B' : 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {portfolio.is_live ? `₹${portfolio.collateral_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </p>
                   </div>
 

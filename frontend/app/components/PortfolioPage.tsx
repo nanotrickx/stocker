@@ -36,6 +36,7 @@ interface PortfolioData {
     available: number;
     used: number;
     collateral: number;
+    connected?: boolean;
   };
   holdings: Holding[];
   positions?: Position[];
@@ -161,13 +162,14 @@ export default function PortfolioPage({ onGoToSettings }: PortfolioPageProps) {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ padding: '10px', borderRadius: '8px', background: 'rgba(245, 158, 11, 0.1)', color: '#F59E0B' }}>
+          <div style={{ padding: '10px', borderRadius: '8px', background: data?.margins.connected !== false ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', color: data?.margins.connected !== false ? '#10B981' : '#EF4444' }}>
             <Shield size={18} />
           </div>
           <div>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Vendor Connection Status</span>
-            <p style={{ fontSize: '13px', fontWeight: 700, color: '#10B981', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }}></span> Active Session
+            <p style={{ fontSize: '13px', fontWeight: 700, color: data?.margins.connected !== false ? '#10B981' : '#EF4444', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: data?.margins.connected !== false ? '#10B981' : '#EF4444', display: 'inline-block' }}></span> 
+              {data?.margins.connected !== false ? 'Active Session' : 'Disconnected / Outage'}
             </p>
           </div>
         </div>
@@ -179,19 +181,27 @@ export default function PortfolioPage({ onGoToSettings }: PortfolioPageProps) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
           <div className="glass-card" style={{ padding: '16px' }}>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Total Cash Balance</span>
-            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: '#fff' }}>₹{data?.margins.cash.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: data?.margins.connected !== false ? '#fff' : 'var(--text-muted)' }}>
+              {data?.margins.connected !== false ? `₹${data?.margins.cash.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'}
+            </p>
           </div>
-          <div className="glass-card" style={{ padding: '16px', borderLeft: '3px solid #10B981' }}>
+          <div className="glass-card" style={{ padding: '16px', borderLeft: data?.margins.connected !== false ? '3px solid #10B981' : '3px solid var(--text-muted)' }}>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Available Margin</span>
-            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: '#10B981' }}>₹{data?.margins.available.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: data?.margins.connected !== false ? '#10B981' : 'var(--text-muted)' }}>
+              {data?.margins.connected !== false ? `₹${data?.margins.available.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'}
+            </p>
           </div>
-          <div className="glass-card" style={{ padding: '16px', borderLeft: '3px solid #EF4444' }}>
+          <div className="glass-card" style={{ padding: '16px', borderLeft: data?.margins.connected !== false ? '3px solid #EF4444' : '3px solid var(--text-muted)' }}>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Used Margin</span>
-            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: '#EF4444' }}>₹{data?.margins.used.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: data?.margins.connected !== false ? '#EF4444' : 'var(--text-muted)' }}>
+              {data?.margins.connected !== false ? `₹${data?.margins.used.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'}
+            </p>
           </div>
           <div className="glass-card" style={{ padding: '16px' }}>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Collateral Value</span>
-            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: '#3B82F6' }}>₹{data?.margins.collateral.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+            <p style={{ fontSize: '20px', fontWeight: 800, marginTop: '4px', color: data?.margins.connected !== false ? '#3B82F6' : 'var(--text-muted)' }}>
+              {data?.margins.connected !== false ? `₹${data?.margins.collateral.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'}
+            </p>
           </div>
         </div>
       </div>
