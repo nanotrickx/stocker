@@ -1,0 +1,77 @@
+# ==========================================
+# Stocker - Root Git Ignore Configuration
+# ==========================================
+
+# OS / System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.db-journal
+*.db-wal
+
+# Editor / IDE Configs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.project
+.classpath
+.settings/
+
+# General Logs & Cache
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ==========================================
+# Backend (Python / FastAPI)
+# ==========================================
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+backend/app/__pycache__/
+backend/**/__pycache__/
+__pycache__/
+*.py[cod]
+*$py.class
+backend/.pytest_cache/
+backend/.mypy_cache/
+
+# Databases (Local SQLite)
+*.db
+backend/stocker.db
+stocker.db
+
+# Secrets & Environment Local Configs
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ==========================================
+# Frontend (Next.js / TypeScript)
+# ==========================================
+frontend/node_modules/
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Secrets & Environment Local Configs
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/.env
+!frontend/.env.example

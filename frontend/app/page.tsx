@@ -1,0 +1,911 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { Activity, TrendingUp, Shield, Settings, Briefcase, Calendar, BarChart2, Play } from 'lucide-react';
+import confetti from 'canvas-confetti';
+
+import { Strategy, StrategyInstance, Trade, OptionChainItem, IndicatorCondition, StrategyType } from './types';
+import { API_BASE, WS_BASE } from './config';
+import Header from './components/Header';
+import OptionChain from './components/OptionChain';
+import ActivePositions from './components/ActivePositions';
+import ActiveAlgorithms from './components/ActiveAlgorithms';
+import ActivationModal from './components/ActivationModal';
+import CustomBuilder from './components/CustomBuilder';
+import TradeLedger from './components/TradeLedger';
+import SettingsPage from './components/SettingsPage';
+import PortfolioPage from './components/PortfolioPage';
+import HistoricalChart from './components/HistoricalChart';
+import BacktestPage from './components/BacktestPage';
+
+export default function StockerDashboard() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [wsConnected, setWsConnected] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [serverHealth, setServerHealth] = useState(true);
+  const [refreshChartKey, setRefreshChartKey] = useState(0);
+
+  // Dynamic Workspace Toggle inside the Algorithms section
+  const [isBuildingStrategy, setIsBuildingStrategy] = useState(false);
+
+  // Core Data States
+  const [spotPrice, setSpotPrice] = useState(22000.0);
+  const [optionChain, setOptionChain] = useState<OptionChainItem[]>([]);
+  const [positions, setPositions] = useState<Trade[]>([]);
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [instances, setInstances] = useState<StrategyInstance[]>([]);
+  const [activeStrategyToActivate, setActiveStrategyToActivate] = useState<Strategy | null>(null);
+  const [tradeHistory, setTradeHistory] = useState<Trade[]>([]);
+
+  // Credentials States
+  const [telegramToken, setTelegramToken] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [kiteApiKey, setKiteApiKey] = useState('');
+  const [kiteApiSecret, setKiteApiSecret] = useState('');
+  const [aliceClientId, setAliceClientId] = useState('');
+  const [aliceApiKey, setAliceApiKey] = useState('');
+  const [activeBroker, setActiveBroker] = useState('kite');
+
+  // Broker Portfolio Balance States
+  const [portfolio, setPortfolio] = useState({
+    broker_name: 'kite',
+    is_live: false,
+    cash_balance: 500000.0,
+    used_margin: 120000.0,
+    collateral_margin: 50000.0,
+    available_margin: 430000.0
+  });
+
+  // Strategy Builder Workspace States
+  const [strategyId, setStrategyId] = useState('');
+  const [strategyName, setStrategyName] = useState('Nifty Dynamic Scalp');
+  const [strategyType, setStrategyType] = useState<StrategyType>('orb_breakout');
+  const [isPaperTrade, setIsPaperTrade] = useState(true);
+  const [symbolTarget, setSymbolTarget] = useState('NSE:NIFTY 50');
+  const [quantity, setQuantity] = useState(50);
+  const [optType, setOptType] = useState('CE');
+  const [strikeSel, setStrikeSel] = useState('ATM');
+  const [slPct, setSlPct] = useState(10.0);
+  const [targetPct, setTargetPct] = useState(10.0);
+  // ORB-specific state
+  const [premiumMin, setPremiumMin] = useState(100);
+  const [premiumMax, setPremiumMax] = useState(200);
+  const [postBreakoutTf, setPostBreakoutTf] = useState('5minute');
+  
+  // Entry & Exit Conditions builders
+  const [entryConditions, setEntryConditions] = useState<IndicatorCondition[]>([
+    { indicator: 'EMA', period: 9, comparison: 'CROSS_ABOVE', target: 'INDICATOR', target_indicator: 'EMA', target_period: 20 }
+  ]);
+  const [exitConditions, setExitConditions] = useState<IndicatorCondition[]>([
+    { indicator: 'RSI', period: 14, comparison: 'CROSS_BELOW', target: 'VALUE', value: 30 }
+  ]);
+
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // ---------------------------------------------------------
+  // Backend Integrations (Fetch & Save)
+  // ---------------------------------------------------------
+  
+  useEffect(() => {
+    setStrategyId('strat_' + Math.random().toString(36).substring(2, 7));
+    fetchStrategies();
+    fetchInstances();
+    fetchTradeHistory();
+    fetchCredentials();
+    fetchPortfolio();
+    connectWebSocket();
+    
+    // Automatically detect and exchange request_token from Zerodha Kite login redirect!
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const reqToken = params.get('request_token');
+      if (reqToken) {
+        setActiveTab('settings');
+        fetch(`${API_BASE}/api/broker/zerodha-login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_token: reqToken })
+        })
+        .then(res => res.json())
+        .then(result => {
+          if (result.status === 'SUCCESS') {
+            confetti({
+              particleCount: 150,
+              spread: 80,
+              origin: { y: 0.6 }
+            });
+            alert('🎉 Zerodha Kite live trading session successfully activated!');
+            window.history.replaceState({}, document.title, window.location.pathname);
+            fetchPortfolio();
+          } else {
+            alert('❌ Zerodha Daily Login Failed: ' + result.message);
+          }
+        })
+        .catch(() => {
+          alert('❌ Failed to establish secure connection with local trading gateway.');
+        });
+      }
+    }
+    
+    const interval = setInterval(fetchPortfolio, 5000);
+    
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+      clearInterval(interval);
+    };
+  }, []);
+
+  const connectWebSocket = () => {
+    try {
+      const ws = new WebSocket(`${WS_BASE}/api/ws`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        setServerHealth(true);
+        console.log('Stocker Real-time Tick WS Connected.');
+      };
+
+      ws.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'STREAM_TICK') {
+          setSpotPrice(payload.spot_price);
+          setOptionChain(payload.option_chain);
+          setPositions(payload.positions);
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        console.log('WS Disconnected. Attempting reconnection in 5s...');
+        setTimeout(connectWebSocket, 5000);
+      };
+
+      ws.onerror = () => {
+        setWsConnected(false);
+      };
+    } catch (e) {
+      setWsConnected(false);
+    }
+  };
+
+  const calculateTotalPnL = (mode: 'PAPER' | 'LIVE') => {
+    const closedPnL = tradeHistory
+      .filter((t) => t.mode.toUpperCase() === mode)
+      .reduce((sum, t) => sum + (t.pnl || 0), 0);
+      
+    const activePnL = positions
+      .filter((t) => t.mode.toUpperCase() === mode)
+      .reduce((sum, t) => sum + (t.pnl || 0), 0);
+      
+    return closedPnL + activePnL;
+  };
+
+  const fetchPortfolio = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/broker/portfolio`);
+      if (res.ok) {
+        const data = await res.json();
+        setPortfolio(data);
+      }
+    } catch (e) {
+      console.log('Failed to fetch broker portfolio margins.');
+    }
+  };
+
+  const fetchCredentials = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/credentials`);
+      if (res.ok) {
+        const creds = await res.json();
+        const tg = creds.find((c: any) => c.broker_name === 'telegram');
+        const kt = creds.find((c: any) => c.broker_name === 'kite');
+        const ab = creds.find((c: any) => c.broker_name === 'aliceblue');
+        
+        if (tg) {
+          setTelegramToken(tg.api_key);
+          setTelegramChatId(tg.api_secret || '');
+        }
+        if (kt) {
+          setKiteApiKey(kt.api_key);
+          setKiteApiSecret(kt.api_secret || '');
+        }
+        if (ab) {
+          setAliceClientId(ab.api_key);
+          setAliceApiKey(ab.api_secret || '');
+        }
+
+        const activeCred = creds.find((c: any) => c.broker_name !== 'telegram' && c.active);
+        if (activeCred) {
+          setActiveBroker(activeCred.broker_name);
+        }
+      }
+    } catch (e) {
+      console.log('Credentials fetch skipped or backend offline');
+    }
+  };
+
+  const fetchStrategies = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategies`);
+      if (res.ok) {
+        const data = await res.json();
+        setStrategies(data);
+      }
+    } catch (e) {
+      setServerHealth(false);
+    }
+  };
+
+  const fetchInstances = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategy-instances`);
+      if (res.ok) {
+        const data = await res.json();
+        setInstances(data);
+      }
+    } catch (e) {
+      setServerHealth(false);
+    }
+  };
+
+  const fetchTradeHistory = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/trades`);
+      if (res.ok) {
+        const data = await res.json();
+        setTradeHistory(data);
+      }
+    } catch (e) {
+      setServerHealth(false);
+    }
+  };
+
+  const saveCredentials = async (broker: string, key: string, secret: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          broker_name: broker,
+          api_key: key,
+          api_secret: secret
+        })
+      });
+      if (res.ok) {
+        confetti({ particleCount: 60, spread: 60, colors: ['#10B981', '#6366F1'] });
+        fetchCredentials();
+      }
+    } catch (e) {
+      alert('Failed to connect to API backend to store credentials.');
+    }
+  };
+
+  const handleSelectActiveBroker = async (broker: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/credentials/select-active?broker_name=${broker}`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        confetti({ particleCount: 50, spread: 40, colors: ['#8B5CF6', '#10B981'] });
+        setActiveBroker(broker);
+        fetchCredentials();
+      }
+    } catch (e) {
+      console.error('Error switching active broker', e);
+    }
+  };
+
+  const handleCreateNewStrategyClick = () => {
+    setStrategyId('strat_' + Math.random().toString(36).substring(2, 7));
+    setStrategyName('Nifty Dynamic Scalp');
+    setIsPaperTrade(true);
+    setSymbolTarget('NSE:NIFTY 50');
+    setQuantity(50);
+    setOptType('CE');
+    setStrikeSel('ATM');
+    setSlPct(4.0);
+    setTargetPct(8.0);
+    setEntryConditions([
+      { indicator: 'EMA', period: 9, comparison: 'CROSS_ABOVE', target: 'INDICATOR', target_indicator: 'EMA', target_period: 20 }
+    ]);
+    setExitConditions([
+      { indicator: 'RSI', period: 14, comparison: 'CROSS_BELOW', target: 'VALUE', value: 30 }
+    ]);
+    setActiveTab('builder');
+    setIsBuildingStrategy(true);
+  };
+
+  const handleEditStrategy = (strat: Strategy) => {
+    try {
+      const config = JSON.parse(strat.config_json);
+      const action = config.action || {};
+      const rules = config.rules || {};
+      const sType = config.strategy_type || 'custom';
+      
+      setStrategyId(strat.id);
+      setStrategyName(strat.name);
+      setStrategyType(sType);
+      setIsPaperTrade(strat.paper_trade);
+      setSymbolTarget(config.symbols?.[0] || 'NSE:NIFTY 50');
+      setQuantity(action.quantity || 50);
+      setStrikeSel(config.option_selection?.strike_selection || action.strike_selection || 'ATM');
+
+      if (sType === 'orb_breakout') {
+        setOptType('AUTO');
+        const risk = config.risk || {};
+        setSlPct(risk.stop_loss_pct || 10.0);
+        setTargetPct(risk.target_pct || 10.0);
+        const optSel = config.option_selection || {};
+        setPremiumMin(optSel.premium_min || 100);
+        setPremiumMax(optSel.premium_max || 200);
+        setPostBreakoutTf(config.timeframes?.post_1030_tf || '5minute');
+      } else {
+        setOptType(action.option_type || 'CE');
+        const slCond = rules.exit?.conditions?.find((c: any) => c.indicator === 'STOP_LOSS_PCT');
+        const tgtCond = rules.exit?.conditions?.find((c: any) => c.indicator === 'TARGET_PCT');
+        if (slCond) setSlPct(slCond.value || 4.0);
+        if (tgtCond) setTargetPct(tgtCond.value || 8.0);
+        
+        const filteredEntry = rules.entry?.conditions || [];
+        const filteredExit = (rules.exit?.conditions || []).filter(
+          (c: any) => c.indicator !== 'STOP_LOSS_PCT' && c.indicator !== 'TARGET_PCT'
+        );
+        
+        setEntryConditions(filteredEntry);
+        setExitConditions(filteredExit.length > 0 ? filteredExit : [
+          { indicator: 'RSI', period: 14, comparison: 'CROSS_BELOW', target: 'VALUE', value: 30 }
+        ]);
+      }
+      
+      setActiveTab('builder');
+      setIsBuildingStrategy(true);
+    } catch (e) {
+      alert('Failed to parse strategy schema parameters.');
+    }
+  };
+
+  const saveStrategy = async () => {
+    let config: any;
+
+    if (strategyType === 'orb_breakout') {
+      config = {
+        strategy_type: 'orb_breakout',
+        symbols: [symbolTarget],
+        timeframes: {
+          opening_candle_tf: 'minute',
+          pre_1030_tf: 'minute',
+          post_1030_tf: postBreakoutTf,
+        },
+        opening_range: { candle_time: '09:15' },
+        option_selection: {
+          strike_selection: strikeSel,
+          premium_min: premiumMin,
+          premium_max: premiumMax,
+          shift_to_otm_if_exceeded: true,
+        },
+        risk: {
+          target_pct: targetPct,
+          stop_loss_pct: slPct,
+        },
+        action: {
+          instrument_type: 'OPTION',
+          quantity: quantity,
+          expiry_type: 'WEEKLY',
+          paper_trade: isPaperTrade,
+        },
+        timeline: {
+          start_time: '09:15',
+          end_time: '15:15',
+          days_of_week: [1, 2, 3, 4, 5],
+        },
+      };
+    } else {
+      config = {
+        strategy_type: 'custom',
+        symbols: [symbolTarget],
+        timeline: {
+          start_time: '09:20',
+          end_time: '15:15',
+          days_of_week: [1, 2, 3, 4, 5]
+        },
+        rules: {
+          entry: {
+            operator: 'AND',
+            conditions: entryConditions
+          },
+          exit: {
+            operator: 'OR',
+            conditions: [
+              ...exitConditions,
+              { indicator: 'STOP_LOSS_PCT', comparison: 'LESS_THAN', target: 'VALUE', value: slPct },
+              { indicator: 'TARGET_PCT', comparison: 'GREATER_THAN', target: 'VALUE', value: targetPct }
+            ]
+          }
+        },
+        action: {
+          instrument_type: 'OPTION',
+          option_type: optType,
+          strike_selection: strikeSel,
+          expiry_type: 'WEEKLY',
+          quantity: quantity,
+          paper_trade: isPaperTrade
+        }
+      };
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/strategies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: strategyId,
+          name: strategyName,
+          paper_trade: isPaperTrade,
+          config: config
+        })
+      });
+
+      if (res.ok) {
+        confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+        setStrategyId('strat_' + Math.random().toString(36).substring(2, 7));
+        fetchStrategies();
+        setIsBuildingStrategy(false);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const errMsg = errData.detail 
+          ? (typeof errData.detail === 'string' ? errData.detail : JSON.stringify(errData.detail, null, 2)) 
+          : 'Unknown server validation error.';
+        alert(`Failed to deploy strategy model:\n${errMsg}`);
+      }
+    } catch (e) {
+      alert('Error creating strategy: backend server unreachable.');
+    }
+  };
+
+  const toggleStrategy = async (id: string, active: boolean) => {
+    try {
+      await fetch(`${API_BASE}/api/strategies/${id}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active })
+      });
+      fetchStrategies();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteStrategy = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this trading strategy?')) return;
+    try {
+      await fetch(`${API_BASE}/api/strategies/${id}`, { method: 'DELETE' });
+      fetchStrategies();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deployInstance = async (data: {
+    template_id: string;
+    symbol: string;
+    instrument_type: string;
+    quantity: number;
+    stop_loss_pct: number;
+    target_pct: number;
+    premium_min: number;
+    premium_max: number;
+    paper_trade: boolean;
+  }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategy-instances`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (res.ok) {
+        confetti({ particleCount: 100, spread: 80, origin: { y: 0.6 } });
+        fetchInstances();
+        setActiveStrategyToActivate(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(`Failed to activate instance: ${errData.detail || 'Unknown server error.'}`);
+      }
+    } catch (e) {
+      alert('Error deploying instance: backend server unreachable.');
+    }
+  };
+
+  const toggleInstance = async (id: number, active: boolean) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategy-instances/${id}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active })
+      });
+      if (res.ok) {
+        fetchInstances();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteInstance = async (id: number) => {
+    if (!confirm('Are you sure you want to stop and delete this active running instance?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/strategy-instances/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchInstances();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const resetPaperRecords = async () => {
+    if (!confirm('This will wipe all mock positions, logs, and summaries to restart fresh. Proceed?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/paper-reset`, { method: 'POST' });
+      if (res.ok) {
+        confetti({ particleCount: 150, spread: 100 });
+        fetchTradeHistory();
+        setPositions([]);
+      }
+    } catch (e) {
+      alert('Error clearing database records.');
+    }
+  };
+
+  const triggerTestTelegram = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/test-telegram`, { method: 'POST' });
+      if (res.ok) {
+        alert('Test notification dispatched. Check your Telegram chat!');
+      }
+    } catch (e) {
+      alert('Error communicating with Telegram Bot service.');
+    }
+  };
+
+  const handleStrikeSelect = (type: 'CE' | 'PE', strikeSelection: string) => {
+    setOptType(type);
+    setStrikeSel(strikeSelection);
+    setActiveTab('builder');
+    setIsBuildingStrategy(true);
+  };
+
+  const handleForceExit = async (tradeId: number) => {
+    if (!confirm('Are you sure you want to force exit this active position immediately?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/trades/${tradeId}/exit`, { method: 'POST' });
+      if (res.ok) {
+        confetti({ particleCount: 80, spread: 60, colors: ['#EF4444', '#F59E0B'] });
+        fetchTradeHistory();
+      } else {
+        alert('Failed to execute manual force exit.');
+      }
+    } catch (e) {
+      alert('Error communicating with execution engine.');
+    }
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      
+      {/* ----------------- TOP NAVBAR WIDGET ----------------- */}
+      <Header 
+        wsConnected={wsConnected} 
+        positionsCount={positions.length} 
+        onRefresh={() => { fetchStrategies(); fetchInstances(); fetchTradeHistory(); setRefreshChartKey(k => k + 1); }} 
+        onOpenSettings={() => setActiveTab('settings')} 
+      />
+
+      {/* ----------------- SUB-TABS SELECTOR ----------------- */}
+      <nav style={{ padding: '0 24px', marginTop: '16px', display: 'flex', gap: '12px' }}>
+        <button 
+          onClick={() => setActiveTab('dashboard')} 
+          className={activeTab === 'dashboard' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <TrendingUp size={16} /> Market Dashboard
+        </button>
+        <button 
+          onClick={() => { setActiveTab('builder'); setIsBuildingStrategy(false); }} 
+          className={activeTab === 'builder' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <Activity size={16} /> Trading Algorithms
+        </button>
+        <button 
+          onClick={() => setActiveTab('ledger')} 
+          className={activeTab === 'ledger' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <TrendingUp size={16} /> Trade History & Ledger
+        </button>
+        <button 
+          onClick={() => setActiveTab('backtest')} 
+          className={activeTab === 'backtest' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <BarChart2 size={16} /> Backtest Simulator
+        </button>
+        <button 
+          onClick={() => setActiveTab('portfolio')} 
+          className={activeTab === 'portfolio' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <Briefcase size={16} /> Broker Portfolio
+        </button>
+        <button 
+          onClick={() => setActiveTab('settings')} 
+          className={activeTab === 'settings' ? 'btn-primary' : 'btn-glass'}
+          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <Settings size={16} /> System Settings
+        </button>
+      </nav>
+
+      {/* ----------------- CONNECTION ALERT ----------------- */}
+      {!serverHealth && (
+        <div className="glass-panel" style={{ margin: '16px 24px 0 24px', padding: '12px 20px', border: '1px solid rgba(244, 63, 94, 0.4)', background: 'rgba(244, 63, 94, 0.1)', display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--accent-red)' }}>
+          <span style={{ fontSize: '13px', fontWeight: 500 }}>Backend Stocker engine is unreachable. Please verify that the FastAPI backend server is running on port 8000.</span>
+        </div>
+      )}
+
+      {/* ----------------- CENTRAL APP WORKSPACE ----------------- */}
+      <main style={{ flex: 1 }}>
+        
+        {/* ================= TAB: DASHBOARD ================= */}
+        {activeTab === 'dashboard' && (
+          <div className="dashboard-grid animate-slide-in">
+            
+            {/* Left Hand Options & Market Feed */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              
+              {/* Top Row: Spot Price & Dual P&L Boards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                
+                {/* Index Spot Price */}
+                <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>NIFTY INDEX SPOT</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '4px' }}>
+                    <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)' }} className="glow-green">
+                      ₹{spotPrice.toFixed(2)}
+                    </p>
+                    <span style={{ fontSize: '11px', color: 'var(--accent-yellow)', fontWeight: 600 }}>3 Days Expiry</span>
+                  </div>
+                </div>
+
+                {/* Paper Sandbox P&L */}
+                {(() => {
+                  const pnl = calculateTotalPnL('PAPER');
+                  const isPos = pnl >= 0;
+                  return (
+                    <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', border: isPos ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(239, 68, 68, 0.15)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>PAPER SANDBOX P&L</span>
+                        <span style={{ fontSize: '9px', background: 'rgba(139, 92, 246, 0.15)', color: '#8B5CF6', padding: '1px 6px', borderRadius: '8px', fontWeight: 600 }}>SANDBOX</span>
+                      </div>
+                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                        {isPos ? '+' : ''}₹{pnl.toFixed(2)}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {/* Live Realtime P&L */}
+                {(() => {
+                  const pnl = calculateTotalPnL('LIVE');
+                  const isPos = pnl >= 0;
+                  const activeBrokerName = activeBroker === 'kite' ? 'Zerodha' : 'AliceBlue';
+                  return (
+                    <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', border: isPos ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(239, 68, 68, 0.15)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>LIVE TRADING P&L</span>
+                        <span style={{ fontSize: '9px', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-green)', padding: '1px 6px', borderRadius: '8px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--accent-green)', display: 'inline-block' }} className="pulse-slow" /> {activeBrokerName}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                        {isPos ? '+' : ''}₹{pnl.toFixed(2)}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+              </div>
+
+              {/* Broker Portfolio Margin board */}
+              <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Shield size={14} style={{ color: '#10B981' }} /> Live Broker Balances & Portfolio Margins
+                  </h3>
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)', padding: '2px 8px', borderRadius: '4px' }}>
+                    Broker: <b style={{ textTransform: 'uppercase', color: 'var(--text-primary)' }}>{portfolio.broker_name}</b>
+                  </span>
+                </div>
+                
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px' }}>
+                  
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Cash Balance</span>
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', fontFamily: 'monospace' }}>
+                      ₹{portfolio.cash_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Available Margin</span>
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#10B981', fontFamily: 'monospace' }}>
+                      ₹{portfolio.available_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Used Margin</span>
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#EF4444', fontFamily: 'monospace' }}>
+                      ₹{portfolio.used_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Collateral</span>
+                    <p style={{ fontSize: '18px', fontWeight: 700, marginTop: '4px', color: '#F59E0B', fontFamily: 'monospace' }}>
+                      ₹{portfolio.collateral_margin.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Interactive Spot Price Chart */}
+              <HistoricalChart symbol={symbolTarget} refreshTrigger={refreshChartKey} />
+
+              {/* Options Chain Grid */}
+              <OptionChain 
+                spotPrice={spotPrice} 
+                optionChain={optionChain} 
+                onStrikeSelect={handleStrikeSelect} 
+              />
+            </div>
+
+            {/* Right Hand Running Trades & Strategy Status */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              
+              {/* Active Positions Board */}
+              <ActivePositions positions={positions} onForceExit={handleForceExit} />
+
+              {/* Deployed Algos Controller */}
+              <ActiveAlgorithms 
+                templates={strategies}
+                instances={instances}
+                onActivateClick={(strat) => setActiveStrategyToActivate(strat)}
+                onToggleInstance={toggleInstance}
+                onDeleteInstance={deleteInstance}
+                onCreateNewClick={handleCreateNewStrategyClick}
+                onDeleteTemplate={deleteStrategy}
+              />
+
+              {/* Log Board */}
+              <div className="glass-panel" style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <h3 style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Activity size={14} /> Indicator evaluation console logs
+                </h3>
+                <div style={{ 
+                  flex: 1, background: 'rgba(0, 0, 0, 0.4)', borderRadius: '8px', padding: '12px', 
+                  fontFamily: 'monospace', fontSize: '11px', color: '#10B981', overflowY: 'auto', 
+                  maxHeight: '200px', border: '1px solid rgba(255,255,255,0.03)' 
+                }}>
+                  <p style={{ color: 'var(--text-muted)' }}>[SYSTEM BOOT] Stocker active indicator loops loaded.</p>
+                  <p style={{ color: 'var(--text-muted)' }}>[INDICATOR] VWAP calculated dynamically.</p>
+                  {positions.length > 0 && <p className="glow-green">[ENGINE] Entry triggered. Placing weekly {optType} contract.</p>}
+                  <p style={{ color: '#8B5CF6' }}>[WS] Listening to live option tick streams...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================= TAB: ALGORITHMS ================= */}
+        {activeTab === 'builder' && (
+          !isBuildingStrategy ? (
+            <ActiveAlgorithms
+              templates={strategies}
+              instances={instances}
+              onActivateClick={(strat) => setActiveStrategyToActivate(strat)}
+              onToggleInstance={toggleInstance}
+              onDeleteInstance={deleteInstance}
+              onCreateNewClick={handleCreateNewStrategyClick}
+              onDeleteTemplate={deleteStrategy}
+            />
+          ) : (
+            <CustomBuilder
+              strategyName={strategyName}
+              setStrategyName={setStrategyName}
+              strategyType={strategyType}
+              setStrategyType={setStrategyType}
+              isPaperTrade={isPaperTrade}
+              setIsPaperTrade={setIsPaperTrade}
+              symbolTarget={symbolTarget}
+              setSymbolTarget={setSymbolTarget}
+              optType={optType}
+              setOptType={setOptType}
+              strikeSel={strikeSel}
+              setStrikeSel={setStrikeSel}
+              quantity={quantity}
+              setQuantity={setQuantity}
+              slPct={slPct}
+              setSlPct={setSlPct}
+              targetPct={targetPct}
+              setTargetPct={setTargetPct}
+              premiumMin={premiumMin}
+              setPremiumMin={setPremiumMin}
+              premiumMax={premiumMax}
+              setPremiumMax={setPremiumMax}
+              postBreakoutTf={postBreakoutTf}
+              setPostBreakoutTf={setPostBreakoutTf}
+              entryConditions={entryConditions}
+              setEntryConditions={setEntryConditions}
+              exitConditions={exitConditions}
+              setExitConditions={setExitConditions}
+              onDeploy={saveStrategy}
+              onCancel={() => setIsBuildingStrategy(false)}
+            />
+          )
+        )}
+
+        {/* ================= TAB: LEDGER ================= */}
+        {activeTab === 'ledger' && (
+          <TradeLedger 
+            tradeHistory={tradeHistory} 
+            onClear={resetPaperRecords} 
+          />
+        )}
+
+        {/* ================= TAB: PORTFOLIO ================= */}
+        {activeTab === 'backtest' && (
+          <BacktestPage />
+        )}
+        {activeTab === 'portfolio' && (
+          <PortfolioPage 
+            onGoToSettings={() => setActiveTab('settings')}
+          />
+        )}
+
+        {/* ================= TAB: SETTINGS ================= */}
+        {activeTab === 'settings' && (
+          <SettingsPage 
+            telegramToken={telegramToken}
+            setTelegramToken={setTelegramToken}
+            telegramChatId={telegramChatId}
+            setTelegramChatId={setTelegramChatId}
+            kiteApiKey={kiteApiKey}
+            setKiteApiKey={setKiteApiKey}
+            kiteApiSecret={kiteApiSecret}
+            setKiteApiSecret={setKiteApiSecret}
+            aliceClientId={aliceClientId}
+            setAliceClientId={setAliceClientId}
+            aliceApiKey={aliceApiKey}
+            setAliceApiKey={setAliceApiKey}
+            onSaveCredentials={saveCredentials}
+            onTestTelegram={triggerTestTelegram}
+            activeBroker={activeBroker}
+            onSelectActiveBroker={handleSelectActiveBroker}
+          />
+        )}
+      </main>
+
+      {activeStrategyToActivate && (
+        <ActivationModal
+          strategy={activeStrategyToActivate}
+          onClose={() => setActiveStrategyToActivate(null)}
+          onDeploy={deployInstance}
+        />
+      )}
+
+    </div>
+  );
+}
