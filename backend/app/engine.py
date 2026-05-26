@@ -137,14 +137,14 @@ class ExecutionEngine:
                     pe_breakout_status = "🔴 Waiting"
                     
                     if state.selected_ce_strike:
-                        curr_ce = round(max(0.5, max(0, spot_price - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
+                        curr_ce = round(max(0.5, max(0, spot_price - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
                         if curr_ce >= state.ce_option_opening_high:
                             ce_breakout_status = f"✅ BREACHED (₹{curr_ce} >= ₹{state.ce_option_opening_high})"
                         else:
                             ce_breakout_status = f"⏳ WAITING (₹{curr_ce} / Target: ₹{state.ce_option_opening_high})"
                             
                     if state.selected_pe_strike:
-                        curr_pe = round(max(0.5, max(0, state.selected_pe_strike - spot_price) + state.selected_pe_strike * 0.005), 2)
+                        curr_pe = round(max(0.5, max(0, state.selected_pe_strike - spot_price) + state.selected_pe_strike * 0.002), 2)
                         if curr_pe >= state.pe_option_opening_high:
                             pe_breakout_status = f"✅ BREACHED (₹{curr_pe} >= ₹{state.pe_option_opening_high})"
                         else:
@@ -817,11 +817,11 @@ class ExecutionEngine:
 
                 # Setup CE strike
                 ce_atm = round(state.opening_close / step) * step
-                ce_est = round(max(0, state.opening_close - ce_atm) + ce_atm * 0.005, 2)
+                ce_est = round(max(0, state.opening_close - ce_atm) + ce_atm * 0.002, 2)
                 if ce_est > premium_max:
                     for shift in range(1, 15):
                         otm = ce_atm + (shift * step)
-                        prem = max(0, state.opening_close - otm) + otm * 0.005
+                        prem = max(0, state.opening_close - otm) + otm * 0.002
                         if premium_min <= prem <= premium_max:
                             ce_atm = otm
                             ce_est = round(prem, 2)
@@ -830,11 +830,11 @@ class ExecutionEngine:
 
                 # Setup PE strike
                 pe_atm = round(state.opening_close / step) * step
-                pe_est = round(max(0, pe_atm - state.opening_close) + pe_atm * 0.005, 2)
+                pe_est = round(max(0, pe_atm - state.opening_close) + pe_atm * 0.002, 2)
                 if pe_est > premium_max:
                     for shift in range(1, 15):
                         otm = pe_atm - (shift * step)
-                        prem = max(0, otm - state.opening_close) + otm * 0.005
+                        prem = max(0, otm - state.opening_close) + otm * 0.002
                         if premium_min <= prem <= premium_max:
                             pe_atm = otm
                             pe_est = round(prem, 2)
@@ -842,8 +842,8 @@ class ExecutionEngine:
                 state.selected_pe_strike = pe_atm
 
                 # Set opening high on options charts mathematically
-                state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
-                state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.005), 2)
+                state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
 
                 state.phase = "WAITING_BREAKOUT"
                 logger.info(f"ORB [{strategy.name}] Opening candle: H={candle['high']} L={candle['low']}. Selected CE={state.selected_ce_strike} (H={state.ce_option_opening_high}), PE={state.selected_pe_strike} (H={state.pe_option_opening_high})")
@@ -871,8 +871,8 @@ class ExecutionEngine:
                 return
 
             # Estimate current premiums
-            current_ce_premium = round(max(0.5, max(0, spot - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
-            current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - spot) + state.selected_pe_strike * 0.005), 2)
+            current_ce_premium = round(max(0.5, max(0, spot - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+            current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - spot) + state.selected_pe_strike * 0.002), 2)
 
             # Rule: "If the option chart first candle high breakout before nifty does, then no entry."
             if spot <= state.opening_high and current_ce_premium > state.ce_option_opening_high:

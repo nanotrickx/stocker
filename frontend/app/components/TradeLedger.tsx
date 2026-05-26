@@ -202,6 +202,7 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
                 <th>Status</th>
                 <th>Execution</th>
                 <th>Exit Reason</th>
+                <th>Report</th>
               </tr>
             </thead>
             <tbody>
@@ -250,6 +251,27 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
                       <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                         {trade.exit_reason || '--'}
                       </span>
+                    </td>
+                    <td>
+                      {onSendTelegramLedger && (
+                        <button
+                          onClick={() => onSendTelegramLedger([trade])}
+                          className="btn-glass"
+                          title="Send individual trade report to Telegram"
+                          style={{
+                            padding: '4px 8px',
+                            color: '#10B981',
+                            border: '1px solid rgba(16, 185, 129, 0.2)',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Send size={12} />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

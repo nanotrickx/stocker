@@ -152,8 +152,8 @@ class ORBStrategyEngine:
         Used when real option data is unavailable (backtesting).
         """
         intrinsic = max(0, spot - strike) if opt_type == "CE" else max(0, strike - spot)
-        # Simple time-value approximation: ~1% of strike
-        time_val = strike * 0.005
+        # Simple time-value approximation: tuned to weekly expirations (~0.2% of strike)
+        time_val = strike * 0.002
         return round(intrinsic + time_val, 2)
 
     def _find_best_strike(
@@ -253,8 +253,8 @@ class ORBStrategyEngine:
                         state.selected_pe_strike = pe_atm
 
                         # Math-based opening highs on options charts
-                        state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
-                        state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.005), 2)
+                        state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                        state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
 
                         state.phase = "WAITING_BREAKOUT"
 
@@ -280,8 +280,8 @@ class ORBStrategyEngine:
                         continue
 
                     # Estimate current premiums
-                    current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
-                    current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.005), 2)
+                    current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                    current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
 
                     # Option breakout before index did check
                     if row["high"] <= state.opening_high and current_ce_premium > state.ce_option_opening_high:
