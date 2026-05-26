@@ -1166,6 +1166,7 @@ async def test_telegram_channel():
     res = await telegram_instance.send_message("🔔 <b>Stocker Live Connection Verified!</b>\nYour system is correctly authenticated with the Telegram Bot API and is monitoring active rules.")
     return {"status": "SUCCESS" if res else "FAILED"}
 
+
 @app.post("/api/paper-reset")
 def reset_paper_trades(session: Session = Depends(get_session)):
     # Delete all paper trades and summaries to let users restart their analytics fresh

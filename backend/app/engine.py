@@ -2,7 +2,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from sqlmodel import Session, select
 from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, now_ist
 from app.broker_manager import get_broker
@@ -28,9 +28,59 @@ class ExecutionEngine:
         self._kite_client = None  # cached KiteConnect instance
         self.daily_start_sent: Dict[str, bool] = {}
         self.daily_summary_sent: Dict[str, bool] = {}
+        self.pre_market_health_check_sent: Dict[str, bool] = {}
 
     def set_telegram_bot(self, telegram_bot):
         self.telegram_bot = telegram_bot
+
+    async def check_broker_health(self) -> Tuple[bool, str]:
+        """
+        Validates the current active broker's connectivity.
+        Returns:
+            Tuple[bool, str]: (is_healthy, detail_message)
+        """
+        try:
+            with Session(db_engine) as session:
+                active_cred = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name != "telegram",
+                    BrokerCredential.active == True
+                )).first()
+                
+                if not active_cred:
+                    return False, "No active broker credentials configured in the database."
+
+                broker_name = active_cred.broker_name
+                
+                if broker_name == "kite":
+                    kite_broker = self.broker_clients.get("KITE")
+                    if not kite_broker or not kite_broker.kite_client:
+                        return False, "Zerodha Kite client is not initialized. Needs manual login."
+                    try:
+                        # Attempt a lightweight margins call to verify API session token
+                        kite_broker.kite_client.margins()
+                        return True, "Zerodha Kite connection is active and healthy."
+                    except Exception as e:
+                        return False, f"Zerodha Kite API session is inactive or expired: {e}"
+
+                elif broker_name == "aliceblue":
+                    alice_broker = self.broker_clients.get("ALICEBLUE")
+                    if not alice_broker or not hasattr(alice_broker, 'alice') or not alice_broker.alice:
+                        return False, "Alice Blue client is not initialized. Needs manual login."
+                    try:
+                        balance = alice_broker.alice.get_balance()
+                        if balance:
+                            return True, "Alice Blue connection is active and healthy."
+                        return False, "Alice Blue returned an empty balance check."
+                    except Exception as e:
+                        return False, f"Alice Blue API session is inactive or expired: {e}"
+                        
+                elif broker_name == "paper":
+                    return True, "Paper trading sandbox environment is active."
+                    
+                else:
+                    return False, f"Unknown broker broker_name '{broker_name}' configured."
+        except Exception as e:
+            return False, f"Unexpected error during connection health check: {e}"
 
     async def start(self):
         """Start the trading execution engine background threads/loops."""
@@ -840,7 +890,23 @@ class ExecutionEngine:
                 now_time = now.time()
 
                 if self.telegram_bot:
-                    # 1. Start of Day notification (between 9:15 AM and 3:30 PM)
+                    # 1. Pre-Market Broker Health Check (20 mins before start, at 08:55 AM)
+                    if time(8, 55) <= now_time <= time(9, 10):
+                        if today_date not in self.pre_market_health_check_sent:
+                            self.pre_market_health_check_sent[today_date] = True
+                            is_healthy, detail = await self.check_broker_health()
+                            if not is_healthy:
+                                logger.warning(f"Pre-market health check failed: {detail}")
+                                await self.telegram_bot.send_message(
+                                    f"⚠️ <b>URGENT: Pre-Market Broker Disconnect!</b>\n\n"
+                                    f"Stocker's pre-market health check detected a broker connectivity issue:\n"
+                                    f"• <b>Reason:</b> {detail}\n\n"
+                                    f"⏰ <b>Market opens in 20 minutes!</b> Please log in and re-authenticate your session via the dashboard settings to ensure automated strategies run successfully today."
+                                )
+                            else:
+                                logger.info("Pre-market broker health check passed successfully.")
+
+                    # 2. Start of Day notification (between 9:15 AM and 3:30 PM)
                     if time(9, 15) <= now_time <= time(15, 30):
                         if today_date not in self.daily_start_sent:
                             self.daily_start_sent[today_date] = True
