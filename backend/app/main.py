@@ -825,6 +825,72 @@ def get_trades_history(
         result.append(d)
     return result
 
+class SendLedgerReportRequest(BaseModel):
+    trade_ids: List[int]
+
+@app.post("/api/trades/telegram-report")
+async def send_ledger_telegram_report(
+    payload: SendLedgerReportRequest,
+    session: Session = Depends(get_session)
+):
+    if not engine_instance.telegram_bot:
+        return {"status": "ERROR", "message": "Telegram Bot is not configured."}
+        
+    trades = session.exec(select(Trade).where(Trade.id.in_(payload.trade_ids))).all()
+    if not trades:
+        return {"status": "ERROR", "message": "No trades found matching the provided IDs."}
+        
+    sorted_trades = sorted(trades, key=lambda x: x.entry_time or datetime.min, reverse=True)
+    
+    total_trades = len(sorted_trades)
+    profitable = sum(1 for t in sorted_trades if (t.pnl or 0.0) > 0)
+    losing = sum(1 for t in sorted_trades if (t.pnl or 0.0) <= 0)
+    net_pnl = sum((t.pnl or 0.0) for t in sorted_trades)
+    win_rate = round((profitable / total_trades) * 100, 1) if total_trades > 0 else 0.0
+    
+    pnl_sign = "🟢 +" if net_pnl >= 0 else "🔴 "
+    
+    msg = (
+        f"📊 <b>STOCKER TRADE LEDGER SUMMARY</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>Total Trades:</b> {total_trades}\n"
+        f"🟢 <b>Profitable Trades:</b> {profitable}\n"
+        f"🔴 <b>Losing Trades:</b> {losing}\n"
+        f"🎯 <b>Win Rate:</b> {win_rate}%\n"
+        f"💰 <b>Net Realized P&L:</b> {pnl_sign}₹{net_pnl:,.2f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📝 <b>Recent Trades Breakdown:</b>\n"
+    )
+    
+    for t in sorted_trades[:10]:
+        inst_name = t.symbol
+        if t.instance_id:
+            inst = session.get(StrategyInstance, t.instance_id)
+            if inst:
+                inst_name = f"{inst.name} ({t.symbol})"
+                
+        pnl_val = t.pnl or 0.0
+        pnl_marker = "🟢 +" if pnl_val >= 0 else "🔴 "
+        status_tag = f"[{t.status}]" if t.status != "CLOSED" else ""
+        
+        exit_p = f" → ₹{t.exit_price:.2f}" if t.exit_price else ""
+        reason_tag = f" ({t.exit_reason})" if t.exit_reason else ""
+        
+        msg += (
+            f"• <b>{inst_name}</b> {status_tag}\n"
+            f"  <code>Entry: ₹{t.entry_price:.2f}{exit_p}{reason_tag}</code>\n"
+            f"  P&L: <b>{pnl_marker}₹{pnl_val:,.2f}</b> | Qty: {t.quantity} ({t.mode})\n\n"
+        )
+        
+    if len(sorted_trades) > 10:
+        msg += f"<i>...and {len(sorted_trades) - 10} more trades in the filtered ledger.</i>"
+        
+    try:
+        await engine_instance.telegram_bot.send_message(msg)
+        return {"status": "SUCCESS", "message": "Ledger summary successfully dispatched to Telegram."}
+    except Exception as e:
+        return {"status": "ERROR", "message": f"Telegram API Error: {e}"}
+
 @app.post("/api/trades/{trade_id}/exit")
 async def force_exit_trade(trade_id: int):
     success = await engine_instance.force_exit_trade(trade_id)

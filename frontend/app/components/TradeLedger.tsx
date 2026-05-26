@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Trash2, ShieldAlert, Filter, ListFilter } from 'lucide-react';
+import { Trash2, ShieldAlert, Filter, ListFilter, Send } from 'lucide-react';
 import { Trade } from '../types';
 
 interface TradeLedgerProps {
   tradeHistory: Trade[];
   onClear: () => void;
+  onSendTelegramLedger?: (filteredTrades: Trade[]) => void;
 }
 
 const SELECT_STYLE: React.CSSProperties = {
@@ -20,7 +21,7 @@ const SELECT_STYLE: React.CSSProperties = {
   minWidth: '120px',
 };
 
-export default function TradeLedger({ tradeHistory, onClear }: TradeLedgerProps) {
+export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedger }: TradeLedgerProps) {
   const [strategyFilter, setStrategyFilter] = useState('ALL');
   const [symbolFilter, setSymbolFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -81,21 +82,41 @@ export default function TradeLedger({ tradeHistory, onClear }: TradeLedgerProps)
           <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Lists closed and active options/equity positions</p>
         </div>
 
-        <button
-          onClick={onClear}
-          className="btn-glass"
-          style={{
-            padding: '8px 16px',
-            color: 'var(--accent-red)',
-            border: '1px solid rgba(244, 63, 94, 0.2)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontSize: '13px',
-          }}
-        >
-          <Trash2 size={14} /> Clear Ledger Records
-        </button>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          {onSendTelegramLedger && tradeHistory.length > 0 && (
+            <button
+              onClick={() => onSendTelegramLedger(filteredTrades)}
+              className="btn-glass"
+              style={{
+                padding: '8px 16px',
+                color: '#10B981',
+                border: '1px solid rgba(16, 185, 129, 0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '13px',
+              }}
+            >
+              <Send size={14} /> Send to Telegram
+            </button>
+          )}
+
+          <button
+            onClick={onClear}
+            className="btn-glass"
+            style={{
+              padding: '8px 16px',
+              color: 'var(--accent-red)',
+              border: '1px solid rgba(244, 63, 94, 0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '13px',
+            }}
+          >
+            <Trash2 size={14} /> Clear Ledger Records
+          </button>
+        </div>
       </div>
 
       {/* Sleek Filter Bar */}

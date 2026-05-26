@@ -560,6 +560,30 @@ export default function StockerDashboard() {
     }
   };
 
+  const sendTelegramLedger = async (filteredTrades: any[]) => {
+    if (filteredTrades.length === 0) {
+      alert('No trades in the filtered ledger to send!');
+      return;
+    }
+    try {
+      const tradeIds = filteredTrades.map((t) => t.id);
+      const res = await fetch(`${API_BASE}/api/trades/telegram-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trade_ids: tradeIds })
+      });
+      const data = await res.json();
+      if (data.status === 'SUCCESS') {
+        alert('Trade History Ledger summary dispatched to Telegram successfully!');
+      } else {
+        alert(`Failed to send Ledger report: ${data.message || 'Unknown error'}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Error connecting to ledger report API: ${e}`);
+    }
+  };
+
   const resetPaperRecords = async () => {
     if (!confirm('This will wipe all mock positions, logs, and summaries to restart fresh. Proceed?')) return;
     try {
@@ -892,6 +916,7 @@ export default function StockerDashboard() {
           <TradeLedger 
             tradeHistory={tradeHistory} 
             onClear={resetPaperRecords} 
+            onSendTelegramLedger={sendTelegramLedger}
           />
         )}
 
