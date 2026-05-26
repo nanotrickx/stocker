@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from sqlmodel import Session, select
-from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, SystemState, now_ist
+from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, SystemState, now_ist, IST
 from app.broker_manager import get_broker
 from app.analytics import calculate_indicators, check_rule_condition
 from app.orb_strategy import ORBState
@@ -726,20 +726,73 @@ class ExecutionEngine:
         if sid in self.orb_states and day_keys.get(sid) != today_key:
             del self.orb_states[sid]
 
-        if sid not in self.orb_states:
-            self.orb_states[sid] = ORBState()
-            day_keys[sid] = today_key
-
-        state = self.orb_states[sid]
-        if state.phase == "DONE":
-            return
-
         risk = config.get("risk", {})
         sl_pct = risk.get("stop_loss_pct", 10.0)
         opt_sel = config.get("option_selection", {})
         premium_min = opt_sel.get("premium_min", 100)
         premium_max = opt_sel.get("premium_max", 200)
         qty = config.get("action", {}).get("quantity", 50)
+
+        if sid not in self.orb_states:
+            state = ORBState()
+            self.orb_states[sid] = state
+            day_keys[sid] = today_key
+
+            # Reconstruct today's ORBState from SQLite to handle server restarts safely
+            try:
+                with Session(db_engine) as db_session:
+                    today_start = datetime.combine(now.date(), time.min, tzinfo=IST)
+                    today_end = datetime.combine(now.date(), time.max, tzinfo=IST)
+                    trades_today = db_session.exec(select(Trade).where(
+                        Trade.instance_id == sid,
+                        Trade.entry_time >= today_start,
+                        Trade.entry_time <= today_end
+                    )).all()
+
+                    if trades_today:
+                        state.trades_taken = []
+                        # Sort by entry time to preserve exact logical sequence
+                        sorted_trades = sorted(trades_today, key=lambda x: x.entry_time)
+                        for t in sorted_trades:
+                            direction = "BULLISH" if t.option_type == "CE" else "BEARISH"
+                            state.trades_taken.append(direction)
+                            if t.exit_reason == "STOP_LOSS":
+                                state.first_trade_hit_sl = True
+
+                        open_trade = next((t for t in sorted_trades if t.status == "OPEN"), None)
+                        if open_trade:
+                            state.phase = "IN_POSITION"
+                            state.selected_option_type = open_trade.option_type
+                            state.selected_strike = open_trade.strike_price
+                            state.entry_price = open_trade.entry_price
+                            state.entry_time = open_trade.entry_time.isoformat()
+                            
+                            # Estimate target and SL levels based on first trade exit behavior
+                            current_target_pct = 15.0 if any(t.exit_reason == "STOP_LOSS" for t in trades_today) else 10.0
+                            state.target_price = round(open_trade.entry_price * (1 + current_target_pct / 100), 2)
+                            state.stop_loss_price = round(open_trade.entry_price * (1 - sl_pct / 100), 2)
+                            state.breakout_price = spot
+                            state.breakout_time = open_trade.entry_time.isoformat()
+                            logger.info(f"ORB [{strategy.name}] Server restart detected active trade: restored {open_trade.symbol} @ ₹{open_trade.entry_price}. Phase → IN_POSITION.")
+                        else:
+                            # Re-calibrate phase when all trades today are closed
+                            any_sl = any(t.exit_reason == "STOP_LOSS" for t in trades_today)
+                            if any_sl and len(state.trades_taken) < 2:
+                                state.first_trade_hit_sl = True
+                                state.phase = "WAITING_BREAKOUT"
+                                # Opposite side breakouts triggers are active
+                                state.index_high_broke_out = False
+                                state.index_low_broke_out = False
+                                logger.info(f"ORB [{strategy.name}] Server restart detected closed SL trade: restored Phase → WAITING_BREAKOUT for opposite direction.")
+                            else:
+                                state.phase = "DONE"
+                                logger.info(f"ORB [{strategy.name}] Server restart detected profit or 2 trades taken: restored Phase → DONE.")
+            except Exception as e:
+                logger.error(f"Error restoring ORB daily trades state from DB: {e}")
+
+        state = self.orb_states[sid]
+        if state.phase == "DONE":
+            return
 
         # ── Phase: WAITING_OPENING_CANDLE ──
         if state.phase == "WAITING_OPENING_CANDLE":
