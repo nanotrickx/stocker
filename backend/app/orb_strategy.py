@@ -244,13 +244,11 @@ class ORBStrategyEngine:
                         # Pre-select CE and PE strikes based on opening close to measure option breakout high
                         step = 50 if "NIFTY" in self.config.get("symbols", ["NSE:NIFTY 50"])[0] else 100
 
-                        # CE Selection
-                        ce_atm, ce_est = self._find_best_strike(state.opening_close, "CE", step)
-                        state.selected_ce_strike = ce_atm
+                        # CE Selection (Strictly ATM)
+                        state.selected_ce_strike = round(state.opening_close / step) * step
 
-                        # PE Selection
-                        pe_atm, pe_est = self._find_best_strike(state.opening_close, "PE", step)
-                        state.selected_pe_strike = pe_atm
+                        # PE Selection (Strictly ATM)
+                        state.selected_pe_strike = round(state.opening_close / step) * step
 
                         # Math-based opening highs on options charts
                         state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
@@ -283,31 +281,6 @@ class ORBStrategyEngine:
                     current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
                     current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
 
-                    # Option breakout before index did check
-                    if row["high"] <= state.opening_high and current_ce_premium > state.ce_option_opening_high:
-                        if not state.ce_option_already_broke_out:
-                            state.ce_option_already_broke_out = True
-                            journal.append({
-                                "ts": ts,
-                                "action": "ALERT",
-                                "price": current_ce_premium,
-                                "reason": [f"CE Option broke out above ₹{state.ce_option_opening_high:.2f} before Index. CE entry invalidated."],
-                                "note": "CE Invalidated",
-                                "capital": capital
-                            })
-
-                    if row["low"] >= state.opening_low and current_pe_premium > state.pe_option_opening_high:
-                        if not state.pe_option_already_broke_out:
-                            state.pe_option_already_broke_out = True
-                            journal.append({
-                                "ts": ts,
-                                "action": "ALERT",
-                                "price": current_pe_premium,
-                                "reason": [f"PE Option broke out above ₹{state.pe_option_opening_high:.2f} before Index. PE entry invalidated."],
-                                "note": "PE Invalidated",
-                                "capital": capital
-                            })
-
                     # Index breakout validation
                     if row["high"] > state.opening_high and "BULLISH" not in state.trades_taken:
                         state.index_high_broke_out = True
@@ -321,7 +294,7 @@ class ORBStrategyEngine:
                     selected_strike = None
                     est_prem = 0.0
 
-                    if state.index_high_broke_out and not state.ce_option_already_broke_out:
+                    if state.index_high_broke_out:
                         if current_ce_premium > state.ce_option_opening_high:
                             trigger_buy = True
                             selected_type = "CE"
@@ -329,7 +302,7 @@ class ORBStrategyEngine:
                             est_prem = current_ce_premium
                             state.breakout_direction = "BULLISH"
 
-                    if state.index_low_broke_out and not state.pe_option_already_broke_out and not trigger_buy:
+                    if state.index_low_broke_out and not trigger_buy:
                         if current_pe_premium > state.pe_option_opening_high:
                             trigger_buy = True
                             selected_type = "PE"

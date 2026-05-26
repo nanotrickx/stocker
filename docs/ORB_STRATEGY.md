@@ -28,7 +28,7 @@ stateDiagram-v2
 - **Action:** Wait for the first 1-minute candle to complete (9:15–9:16)
 - **Records:** 
   - Index Spot HIGH, LOW, and CLOSE
-  - Pre-selected CE & PE Strikes based on the 9:16 spot close price (Premium range ₹100–₹200)
+  - Pre-selected CE & PE Strikes based on the 9:16 spot close price (Strictly ATM strike)
   - Mathematical option opening candle HIGHs (`ce_option_opening_high`, `pe_option_opening_high`)
 - **Telegram Alert:** `🎯 ORB Opening Range Set (1-Min)` with Index and Option parameters
 
@@ -37,8 +37,7 @@ stateDiagram-v2
 - **Action:** Monitor real-time spot and pre-selected options premiums every 5 seconds
 - **Double Breakout Rules:**
   1. **Index Breakout:** The Nifty Spot must cross above the Opening HIGH (Bullish) or below the Opening LOW (Bearish).
-  2. **Option High Invalidation:** If the pre-selected Option contract breaches its own opening candle HIGH *before* the Index Spot breaks out, that option's entry is invalidated for the day.
-  3. **Option Breakout Entry:** Entry triggers *only if* the Index Spot has broken out, and *then* the respective Option premium crosses above its own opening candle HIGH.
+  2. **Option Breakout Entry:** Once the Index Spot has broken out, the strategy verifies if the respective Option premium has also crossed above its own opening candle HIGH to trigger the trade.
 - **Max Entries & Re-entries:**
   - Maximum of 2 entries per day (one High breakout CE trade, one Low breakout PE trade).
   - If the first trade hits target or timeline, strategy is DONE.
@@ -66,26 +65,21 @@ stateDiagram-v2
    ATM = round(spot / step) × step
    (step = 50 for Nifty, 100 for BankNifty)
 
-2. Estimate Premium:
-   premium = intrinsic + (strike × 0.005)
+2. Strictly choose the ATM Strike contract.
+   No premium range shifting or filters are applied.
 
-3. Premium Filter (₹100 – ₹200):
-   IF premium > ₹200 → shift to OTM strikes until within range
-   IF premium < ₹100 → shift to ITM strikes until within range
-
-4. Entry Price = estimated premium of selected strike
+3. Entry Price = estimated premium of the selected ATM strike
 ```
 
 ### Example
 ```
 Spot: 24720
-ATM Strike: 24700 CE
-Estimated Premium: ₹135
+Selected Strike: Strictly 24700 CE (ATM)
+Estimated Premium: ₹99.40 (using 0.002 calibrated multiplier)
 
-Premium ₹135 is within ₹100-₹200 ✓
-→ BUY 24700 CE @ ₹135
-→ Target: ₹148.50 (+10%)
-→ SL: ₹121.50 (-10%)
+→ BUY 24700 CE @ ₹99.40
+→ Target: ₹109.34 (+10%)
+→ SL: ₹89.46 (-10%)
 ```
 
 ---

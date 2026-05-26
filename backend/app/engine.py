@@ -815,31 +815,11 @@ class ExecutionEngine:
                 # Pre-select CE and PE strikes based on opening close to measure option breakout high
                 step = 50 if "NIFTY" in symbol else 100
 
-                # Setup CE strike
-                ce_atm = round(state.opening_close / step) * step
-                ce_est = round(max(0, state.opening_close - ce_atm) + ce_atm * 0.002, 2)
-                if ce_est > premium_max:
-                    for shift in range(1, 15):
-                        otm = ce_atm + (shift * step)
-                        prem = max(0, state.opening_close - otm) + otm * 0.002
-                        if premium_min <= prem <= premium_max:
-                            ce_atm = otm
-                            ce_est = round(prem, 2)
-                            break
-                state.selected_ce_strike = ce_atm
+                # Setup CE strike (Strictly ATM)
+                state.selected_ce_strike = round(state.opening_close / step) * step
 
-                # Setup PE strike
-                pe_atm = round(state.opening_close / step) * step
-                pe_est = round(max(0, pe_atm - state.opening_close) + pe_atm * 0.002, 2)
-                if pe_est > premium_max:
-                    for shift in range(1, 15):
-                        otm = pe_atm - (shift * step)
-                        prem = max(0, otm - state.opening_close) + otm * 0.002
-                        if premium_min <= prem <= premium_max:
-                            pe_atm = otm
-                            pe_est = round(prem, 2)
-                            break
-                state.selected_pe_strike = pe_atm
+                # Setup PE strike (Strictly ATM)
+                state.selected_pe_strike = round(state.opening_close / step) * step
 
                 # Set opening high on options charts mathematically
                 state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
@@ -874,17 +854,6 @@ class ExecutionEngine:
             current_ce_premium = round(max(0.5, max(0, spot - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
             current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - spot) + state.selected_pe_strike * 0.002), 2)
 
-            # Rule: "If the option chart first candle high breakout before nifty does, then no entry."
-            if spot <= state.opening_high and current_ce_premium > state.ce_option_opening_high:
-                if not state.ce_option_already_broke_out:
-                    state.ce_option_already_broke_out = True
-                    logger.info(f"ORB [{strategy.name}] CE option broke out before index did. CE entry invalidated.")
-
-            if spot >= state.opening_low and current_pe_premium > state.pe_option_opening_high:
-                if not state.pe_option_already_broke_out:
-                    state.pe_option_already_broke_out = True
-                    logger.info(f"ORB [{strategy.name}] PE option broke out before index did. PE entry invalidated.")
-
             # Check index breakout
             if spot > state.opening_high and "BULLISH" not in state.trades_taken:
                 state.index_high_broke_out = True
@@ -898,7 +867,7 @@ class ExecutionEngine:
             selected_strike = None
             est_prem = 0.0
 
-            if state.index_high_broke_out and not state.ce_option_already_broke_out:
+            if state.index_high_broke_out:
                 if current_ce_premium > state.ce_option_opening_high:
                     trigger_buy = True
                     selected_type = "CE"
@@ -907,7 +876,7 @@ class ExecutionEngine:
                     state.breakout_direction = "BULLISH"
 
             # Double breakout trigger PE
-            if state.index_low_broke_out and not state.pe_option_already_broke_out and not trigger_buy:
+            if state.index_low_broke_out and not trigger_buy:
                 if current_pe_premium > state.pe_option_opening_high:
                     trigger_buy = True
                     selected_type = "PE"
