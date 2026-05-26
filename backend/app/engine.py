@@ -105,6 +105,109 @@ class ExecutionEngine:
         except Exception as e:
             logger.warning(f"Error setting system state for {key}: {e}")
 
+    async def send_strategy_telegram_status(self, instance_id: int) -> Tuple[bool, str]:
+        """
+        Generates and sends a rich, real-time Telegram status update bulletin for an active strategy.
+        """
+        try:
+            if not self.telegram_bot:
+                return False, "Telegram Bot is not initialized."
+
+            with Session(db_engine) as session:
+                instance = session.get(StrategyInstance, instance_id)
+                if not instance:
+                    return False, f"Strategy deployment instance ID {instance_id} not found."
+
+                config = instance.get_config()
+                symbol = instance.symbol
+                strategy_type = config.get("strategy_type", "custom")
+                active_status = "🟢 ACTIVE/RUNNING" if instance.active else "🔴 PAUSED/INACTIVE"
+                mode_status = "SANDBOX (PAPER)" if instance.paper_trade else "LIVE TRADING"
+
+                if strategy_type == "orb_breakout":
+                    state = self.orb_states.get(instance_id)
+                    if not state:
+                        # Fallback if no ticks have updated it yet today
+                        return False, "Strategy is not currently initialized in memory. Please start it first."
+
+                    # Calculate dynamic metrics for real-time reporting
+                    spot_price = await self.fetch_live_spot(symbol)
+                    
+                    ce_breakout_status = "🔴 Waiting"
+                    pe_breakout_status = "🔴 Waiting"
+                    
+                    if state.selected_ce_strike:
+                        curr_ce = round(max(0.5, max(0, spot_price - state.selected_ce_strike) + state.selected_ce_strike * 0.005), 2)
+                        if curr_ce >= state.ce_option_opening_high:
+                            ce_breakout_status = f"✅ BREACHED (₹{curr_ce} >= ₹{state.ce_option_opening_high})"
+                        else:
+                            ce_breakout_status = f"⏳ WAITING (₹{curr_ce} / Target: ₹{state.ce_option_opening_high})"
+                            
+                    if state.selected_pe_strike:
+                        curr_pe = round(max(0.5, max(0, state.selected_pe_strike - spot_price) + state.selected_pe_strike * 0.005), 2)
+                        if curr_pe >= state.pe_option_opening_high:
+                            pe_breakout_status = f"✅ BREACHED (₹{curr_pe} >= ₹{state.pe_option_opening_high})"
+                        else:
+                            pe_breakout_status = f"⏳ WAITING (₹{curr_pe} / Target: ₹{state.pe_option_opening_high})"
+
+                    # Check for active trade
+                    active_trade = session.exec(select(Trade).where(
+                        Trade.instance_id == instance_id,
+                        Trade.status == "OPEN"
+                    )).first()
+
+                    trade_section = "🟢 <b>Active Positions:</b> None"
+                    if active_trade:
+                        opt_str = f"{active_trade.strike_price} {active_trade.option_type}"
+                        trade_section = (
+                            f"📈 <b>Active Position Details:</b>\n"
+                            f"• <b>Contract:</b> {opt_str}\n"
+                            f"• <b>Entry:</b> ₹{active_trade.entry_price} @ {active_trade.entry_time.strftime('%I:%M %p')}\n"
+                            f"• <b>Quantity:</b> {active_trade.quantity}\n"
+                            f"• <b>Current LTP:</b> ₹{spot_price}\n"
+                            f"• <b>Unrealized P&L:</b> <b>₹{active_trade.pnl:.2f}</b>"
+                        )
+
+                    message = (
+                        f"📊 <b>Stocker Live Algorithm Status</b>\n\n"
+                        f"⚙️ <b>Strategy:</b> {instance.name}\n"
+                        f"💼 <b>Asset:</b> <code>{symbol}</code>\n"
+                        f"⚡ <b>Engine Phase:</b> <code>{state.phase}</code>\n"
+                        f"🚦 <b>Status:</b> {active_status} | <b>{mode_status}</b>\n\n"
+                        f"📋 <b>Opening Candle Parameters (1-Min):</b>\n"
+                        f"• <b>Spot High:</b> ₹{state.opening_high}\n"
+                        f"• <b>Spot Low:</b> ₹{state.opening_low}\n\n"
+                        f"🔒 <b>Strike Lock Options Targets:</b>\n"
+                        f"• <b>CE strike:</b> {state.selected_ce_strike} CE\n"
+                        f"  - <i>Trigger Target:</i> ₹{state.ce_option_opening_high}\n"
+                        f"  - <i>Current Breakout Status:</i> {ce_breakout_status}\n"
+                        f"• <b>PE strike:</b> {state.selected_pe_strike} PE\n"
+                        f"  - <i>Trigger Target:</i> ₹{state.pe_option_opening_high}\n"
+                        f"  - <i>Current Breakout Status:</i> {pe_breakout_status}\n\n"
+                        f"{trade_section}\n\n"
+                        f"⏰ <b>Entry Cutoff:</b> 11:00 AM IST\n"
+                        f"🕒 <b>Reported At:</b> {now_ist().strftime('%I:%M:%S %p')}"
+                    )
+
+                    await self.telegram_bot.send_message(message)
+                    return True, "Strategy status bulletin successfully dispatched."
+
+                else:
+                    # Custom standard strategy type fallback
+                    message = (
+                        f"📊 <b>Stocker Live Algorithm Status</b>\n\n"
+                        f"⚙️ <b>Strategy:</b> {instance.name}\n"
+                        f"💼 <b>Asset:</b> <code>{symbol}</code>\n"
+                        f"🚦 <b>Status:</b> {active_status} | <b>{mode_status}</b>\n"
+                        f"🕒 <b>Reported At:</b> {now_ist().strftime('%I:%M:%S %p')}"
+                    )
+                    await self.telegram_bot.send_message(message)
+                    return True, "Custom strategy status bulletin successfully dispatched."
+
+        except Exception as e:
+            logger.error(f"Error sending strategy Telegram status for instance {instance_id}: {e}")
+            return False, f"Unexpected server error: {e}"
+
     async def start(self):
         """Start the trading execution engine background threads/loops."""
         self.running = True

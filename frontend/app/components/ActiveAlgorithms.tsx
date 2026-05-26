@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Bot, Plus, Trash2, Shield, Zap, HelpCircle, Power, Sliders, ExternalLink } from 'lucide-react';
+import { Bot, Plus, Trash2, Shield, Zap, HelpCircle, Power, Sliders, ExternalLink, Send } from 'lucide-react';
 import { Strategy, StrategyInstance } from '../types';
 
 interface ActiveAlgorithmsProps {
@@ -12,6 +12,7 @@ interface ActiveAlgorithmsProps {
   onDeleteInstance: (id: number) => void;
   onCreateNewClick: () => void;
   onDeleteTemplate: (id: string) => void;
+  onSendTelegramStatus?: (id: number) => void;
 }
 
 export default function ActiveAlgorithms({
@@ -22,6 +23,7 @@ export default function ActiveAlgorithms({
   onDeleteInstance,
   onCreateNewClick,
   onDeleteTemplate,
+  onSendTelegramStatus,
 }: ActiveAlgorithmsProps) {
 
   return (
@@ -236,6 +238,29 @@ export default function ActiveAlgorithms({
 
                       {/* Delete */}
                       <td style={{ padding: '16px', textAlign: 'right' }}>
+                        {onSendTelegramStatus && (
+                          <button 
+                            onClick={() => onSendTelegramStatus(inst.id)} 
+                            style={{ 
+                              background: 'rgba(59, 130, 246, 0.08)', 
+                              border: '1px solid rgba(59, 130, 246, 0.15)', 
+                              color: '#3B82F6', 
+                              padding: '6px 10px', 
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              marginRight: '8px',
+                              fontSize: '11px',
+                              fontWeight: 600
+                            }}
+                            className="hover-blue"
+                            title="Send current strategy status report to Telegram Bot"
+                          >
+                            <Send size={11} /> Status
+                          </button>
+                        )}
                         <button 
                           onClick={() => onDeleteInstance(inst.id)} 
                           style={{ 

@@ -543,6 +543,23 @@ export default function StockerDashboard() {
     }
   };
 
+  const sendTelegramStatus = async (id: number) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/strategies/${id}/telegram-status`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.status === 'SUCCESS') {
+        alert('Strategy status bulletin sent to Telegram successfully!');
+      } else {
+        alert(`Failed to send status update: ${data.message || 'Unknown error'}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Error connecting to status endpoint: ${e}`);
+    }
+  };
+
   const resetPaperRecords = async () => {
     if (!confirm('This will wipe all mock positions, logs, and summaries to restart fresh. Proceed?')) return;
     try {
@@ -798,6 +815,7 @@ export default function StockerDashboard() {
                 onDeleteInstance={deleteInstance}
                 onCreateNewClick={handleCreateNewStrategyClick}
                 onDeleteTemplate={deleteStrategy}
+                onSendTelegramStatus={sendTelegramStatus}
               />
 
               {/* Log Board */}
@@ -831,6 +849,7 @@ export default function StockerDashboard() {
               onDeleteInstance={deleteInstance}
               onCreateNewClick={handleCreateNewStrategyClick}
               onDeleteTemplate={deleteStrategy}
+              onSendTelegramStatus={sendTelegramStatus}
             />
           ) : (
             <CustomBuilder

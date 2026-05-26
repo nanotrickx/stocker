@@ -1166,6 +1166,13 @@ async def test_telegram_channel():
     res = await telegram_instance.send_message("🔔 <b>Stocker Live Connection Verified!</b>\nYour system is correctly authenticated with the Telegram Bot API and is monitoring active rules.")
     return {"status": "SUCCESS" if res else "FAILED"}
 
+@app.post("/api/strategies/{instance_id}/telegram-status")
+async def send_strategy_telegram_status_route(instance_id: int):
+    success, message = await engine_instance.send_strategy_telegram_status(instance_id)
+    if not success:
+        return {"status": "FAILED", "message": message}
+    return {"status": "SUCCESS", "message": message}
+
 
 @app.post("/api/paper-reset")
 def reset_paper_trades(session: Session = Depends(get_session)):
