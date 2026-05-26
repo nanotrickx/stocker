@@ -530,12 +530,16 @@ class ExecutionEngine:
         today_key = f"{sid}_{now.strftime('%Y%m%d')}"
 
         # Reset state for new day
-        if sid in self.orb_states and today_key not in self.orb_states.get("_day_key", ""):
+        if "_day_keys" not in self.orb_states:
+            self.orb_states["_day_keys"] = {}
+        day_keys = self.orb_states["_day_keys"]
+
+        if sid in self.orb_states and day_keys.get(sid) != today_key:
             del self.orb_states[sid]
 
         if sid not in self.orb_states:
             self.orb_states[sid] = ORBState()
-            self.orb_states["_day_key"] = today_key
+            day_keys[sid] = today_key
 
         state = self.orb_states[sid]
         if state.phase == "DONE":
