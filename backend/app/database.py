@@ -87,6 +87,11 @@ class DailySummary(SQLModel, table=True):
     net_pnl: float = Field(default=0.0)
     updated_at: datetime = Field(default_factory=now_ist)
 
+class SystemState(SQLModel, table=True):
+    key: str = Field(primary_key=True)
+    value: str
+    updated_at: datetime = Field(default_factory=now_ist)
+
 def init_db():
     """Create all SQLite database tables."""
     SQLModel.metadata.create_all(engine)

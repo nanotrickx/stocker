@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from sqlmodel import Session, select
-from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, now_ist
+from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, SystemState, now_ist
 from app.broker_manager import get_broker
 from app.analytics import calculate_indicators, check_rule_condition
 from app.orb_strategy import ORBState
@@ -81,6 +81,29 @@ class ExecutionEngine:
                     return False, f"Unknown broker broker_name '{broker_name}' configured."
         except Exception as e:
             return False, f"Unexpected error during connection health check: {e}"
+
+    def _get_system_state(self, key: str) -> Optional[str]:
+        try:
+            with Session(db_engine) as session:
+                state = session.get(SystemState, key)
+                return state.value if state else None
+        except Exception as e:
+            logger.warning(f"Error fetching system state for {key}: {e}")
+            return None
+
+    def _set_system_state(self, key: str, value: str):
+        try:
+            with Session(db_engine) as session:
+                state = session.get(SystemState, key)
+                if state:
+                    state.value = value
+                    state.updated_at = now_ist()
+                else:
+                    state = SystemState(key=key, value=value)
+                session.add(state)
+                session.commit()
+        except Exception as e:
+            logger.warning(f"Error setting system state for {key}: {e}")
 
     async def start(self):
         """Start the trading execution engine background threads/loops."""
@@ -670,17 +693,20 @@ class ExecutionEngine:
                 logger.info(f"ORB [{strategy.name}] Opening candle: H={candle['high']} L={candle['low']}. Selected CE={state.selected_ce_strike} (H={state.ce_option_opening_high}), PE={state.selected_pe_strike} (H={state.pe_option_opening_high})")
 
                 if self.telegram_bot:
-                    ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
-                    await self.telegram_bot.send_message(
-                        f"🎯 <b>ORB Opening Range Set (1-Min)</b>\n\n"
-                        f"<b>Strategy:</b> {strategy.name}\n"
-                        f"<b>Nifty High:</b> ₹{candle['high']}\n"
-                        f"<b>Nifty Low:</b> ₹{candle['low']}\n"
-                        f"<b>Option CE:</b> {state.selected_ce_strike} CE (First Min High: ₹{state.ce_option_opening_high})\n"
-                        f"<b>Option PE:</b> {state.selected_pe_strike} PE (First Min High: ₹{state.pe_option_opening_high})\n"
-                        f"⏰ <b>Time:</b> {ts_str}\n"
-                        f"<b>Waiting for double breakout...</b>"
-                    )
+                    alert_key = f"orb_range_alert_sent_{strategy.id}_{now.strftime('%Y%m%d')}"
+                    if self._get_system_state(alert_key) != "true":
+                        self._set_system_state(alert_key, "true")
+                        ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
+                        await self.telegram_bot.send_message(
+                            f"🎯 <b>ORB Opening Range Set (1-Min)</b>\n\n"
+                            f"<b>Strategy:</b> {strategy.name}\n"
+                            f"<b>Nifty High:</b> ₹{candle['high']}\n"
+                            f"<b>Nifty Low:</b> ₹{candle['low']}\n"
+                            f"<b>Option CE:</b> {state.selected_ce_strike} CE (First Min High: ₹{state.ce_option_opening_high})\n"
+                            f"<b>Option PE:</b> {state.selected_pe_strike} PE (First Min High: ₹{state.pe_option_opening_high})\n"
+                            f"⏰ <b>Time:</b> {ts_str}\n"
+                            f"<b>Waiting for double breakout...</b>"
+                        )
 
         # ── Phase: WAITING_BREAKOUT ──
         elif state.phase == "WAITING_BREAKOUT":
@@ -892,8 +918,9 @@ class ExecutionEngine:
                 if self.telegram_bot:
                     # 1. Pre-Market Broker Health Check (20 mins before start, at 08:55 AM)
                     if time(8, 55) <= now_time <= time(9, 10):
-                        if today_date not in self.pre_market_health_check_sent:
+                        if today_date not in self.pre_market_health_check_sent and self._get_system_state(f"pre_market_health_check_sent_{today_date}") != "true":
                             self.pre_market_health_check_sent[today_date] = True
+                            self._set_system_state(f"pre_market_health_check_sent_{today_date}", "true")
                             is_healthy, detail = await self.check_broker_health()
                             if not is_healthy:
                                 logger.warning(f"Pre-market health check failed: {detail}")
@@ -908,8 +935,9 @@ class ExecutionEngine:
 
                     # 2. Start of Day notification (between 9:15 AM and 3:30 PM)
                     if time(9, 15) <= now_time <= time(15, 30):
-                        if today_date not in self.daily_start_sent:
+                        if today_date not in self.daily_start_sent and self._get_system_state(f"daily_start_sent_{today_date}") != "true":
                             self.daily_start_sent[today_date] = True
+                            self._set_system_state(f"daily_start_sent_{today_date}", "true")
                             await self.telegram_bot.send_message(
                                 f"🚀 <b>Stocker Engine is Working!</b>\n\n"
                                 f"Stocker automated trading core has booted successfully for today (<b>{now.strftime('%d-%b-%Y')}</b>) "
@@ -917,10 +945,11 @@ class ExecutionEngine:
                                 f"🟢 <b>Status:</b> Live & Connected"
                             )
 
-                    # 2. End of Day daily summary (at or after 3:30 PM)
+                    # 3. End of Day daily summary (at or after 3:30 PM)
                     if now_time >= time(15, 30):
-                        if today_date not in self.daily_summary_sent:
+                        if today_date not in self.daily_summary_sent and self._get_system_state(f"daily_summary_sent_{today_date}") != "true":
                             self.daily_summary_sent[today_date] = True
+                            self._set_system_state(f"daily_summary_sent_{today_date}", "true")
                             logger.info(f"Triggering automated DailySummary report generation for {today_date}...")
                             await self.telegram_bot.generate_and_send_daily_summary()
 
