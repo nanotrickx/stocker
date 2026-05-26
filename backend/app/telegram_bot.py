@@ -52,6 +52,7 @@ class TelegramBot:
         """
         Gathers all trades closed today, computes metrics (Win Rate %, total P&L),
         records a DailySummary to database, and posts a premium styled bulletin to Telegram.
+        Supports sending empty summary reports so users know system ran successfully.
         """
         today = date.today()
         start_of_day = datetime.combine(today, datetime.min.time())
@@ -65,10 +66,6 @@ class TelegramBot:
                 Trade.exit_time <= end_of_day
             )
             closed_trades = session.exec(statement).all()
-
-            if not closed_trades:
-                logger.info("No trades closed today. Skipping daily summary notification.")
-                return None
 
             total = len(closed_trades)
             profitable = sum(1 for t in closed_trades if (t.pnl or 0) > 0)
@@ -97,24 +94,37 @@ class TelegramBot:
             # Construct stunning Telegram Summary Message
             pnl_emoji = "🟩" if net_pnl >= 0 else "🟥"
             
-            msg = (
-                f"📊 <b>DAILY TRADING SUMMARY ({today.strftime('%d %B %Y')})</b>\n"
-                f"===============================\n\n"
-                f"💼 <b>Total Trades Executed:</b> {total}\n"
-                f"🎯 <b>Profitable Trades:</b> {profitable} ✅\n"
-                f"❌ <b>Losing Trades:</b> {losing} 🔻\n"
-                f"📈 <b>Win Rate:</b> {round(win_rate, 1)}%\n\n"
-                f"💸 <b>Total Realized P&L:</b> {pnl_emoji} <b>₹{round(net_pnl, 2)}</b>\n"
-                f"===============================\n\n"
-                f"<b>Trade-by-Trade Performance:</b>\n"
-            )
+            if total > 0:
+                msg = (
+                    f"📊 <b>DAILY TRADING SUMMARY ({today.strftime('%d %B %Y')})</b>\n"
+                    f"===============================\n\n"
+                    f"💼 <b>Total Trades Executed:</b> {total}\n"
+                    f"🎯 <b>Profitable Trades:</b> {profitable} ✅\n"
+                    f"❌ <b>Losing Trades:</b> {losing} 🔻\n"
+                    f"📈 <b>Win Rate:</b> {round(win_rate, 1)}%\n\n"
+                    f"💸 <b>Total Realized P&L:</b> {pnl_emoji} <b>₹{round(net_pnl, 2)}</b>\n"
+                    f"===============================\n\n"
+                    f"<b>Trade-by-Trade Performance:</b>\n"
+                )
 
-            for index, t in enumerate(closed_trades, 1):
-                indicator = "🟢" if (t.pnl or 0) >= 0 else "🔴"
-                msg += (
-                    f"{index}. {indicator} <b>{t.symbol}</b> ({t.mode})\n"
-                    f"   • Entry: ₹{t.entry_price} | Exit: ₹{t.exit_price}\n"
-                    f"   • P&L: ₹{round(t.pnl or 0.0, 2)} ({t.exit_reason})\n"
+                for index, t in enumerate(closed_trades, 1):
+                    indicator = "🟢" if (t.pnl or 0) >= 0 else "🔴"
+                    msg += (
+                        f"{index}. {indicator} <b>{t.symbol}</b> ({t.mode})\n"
+                        f"   • Entry: ₹{t.entry_price} | Exit: ₹{t.exit_price}\n"
+                        f"   • P&L: ₹{round(t.pnl or 0.0, 2)} ({t.exit_reason})\n"
+                    )
+            else:
+                msg = (
+                    f"📊 <b>DAILY TRADING SUMMARY ({today.strftime('%d %B %Y')})</b>\n"
+                    f"===============================\n\n"
+                    f"💼 <b>Total Trades Executed:</b> 0\n"
+                    f"🎯 <b>Profitable Trades:</b> 0 ✅\n"
+                    f"❌ <b>Losing Trades:</b> 0 🔻\n"
+                    f"📈 <b>Win Rate:</b> 0.0%\n\n"
+                    f"💸 <b>Total Realized P&L:</b> {pnl_emoji} <b>₹0.00</b>\n"
+                    f"===============================\n\n"
+                    f"ℹ️ <b>No trades were triggered or executed today.</b> The automated trading core monitored all opening breakout ranges successfully, but no breakout thresholds were breached."
                 )
 
             # Dispatch notification
