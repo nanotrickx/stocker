@@ -235,16 +235,33 @@ class ExecutionEngine:
         except Exception as e:
             logger.error(f"Error restoring active broker session on startup: {e}")
 
-        # Check if daily summary has already been sent today
+        # Check if daily summary has already been sent today, and load all system state sent flags from DB
         try:
             with Session(db_engine) as session:
                 today = now_ist().date()
+                today_str = today.strftime("%Y-%m-%d")
+                
+                # Pre-populate daily summary from DailySummary table
                 summary = session.exec(select(DailySummary).where(DailySummary.trade_date == today)).first()
                 if summary:
-                    self.daily_summary_sent[today.strftime("%Y-%m-%d")] = True
+                    self.daily_summary_sent[today_str] = True
                     logger.info(f"Loaded today's DailySummary from database. EOD Telegram notifications already completed.")
+                
+                # Query all today's SystemState records to populate in-memory send caches
+                states = session.exec(select(SystemState).where(SystemState.key.like(f"%_{today_str}"))).all()
+                for state in states:
+                    if state.value == "true":
+                        if state.key.startswith("daily_start_sent_"):
+                            self.daily_start_sent[today_str] = True
+                            logger.info(f"Loaded daily start status from DB: already sent today.")
+                        elif state.key.startswith("pre_market_health_check_sent_"):
+                            self.pre_market_health_check_sent[today_str] = True
+                            logger.info(f"Loaded pre-market health check status from DB: already sent today.")
+                        elif state.key.startswith("daily_summary_sent_"):
+                            self.daily_summary_sent[today_str] = True
+                            logger.info(f"Loaded daily EOD summary status from DB: already sent today.")
         except Exception as e:
-            logger.warning(f"Could not load today's daily summary state on startup: {e}")
+            logger.warning(f"Could not load today's daily system state sent flags on startup: {e}")
 
         asyncio.create_task(self.engine_loop())
 
