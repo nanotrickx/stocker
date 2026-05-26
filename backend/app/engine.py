@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Any, Optional
 from sqlmodel import Session, select
-from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, now_ist
+from app.database import engine as db_engine, Strategy, StrategyInstance, Trade, BrokerCredential, DailySummary, now_ist
 from app.broker_manager import get_broker
 from app.analytics import calculate_indicators, check_rule_condition
 from app.orb_strategy import ORBState
@@ -26,6 +26,8 @@ class ExecutionEngine:
         self.historical_data_cache: Dict[str, pd.DataFrame] = {}
         self.orb_states: Dict[str, ORBState] = {}  # per-strategy ORB state
         self._kite_client = None  # cached KiteConnect instance
+        self.daily_start_sent: Dict[str, bool] = {}
+        self.daily_summary_sent: Dict[str, bool] = {}
 
     def set_telegram_bot(self, telegram_bot):
         self.telegram_bot = telegram_bot
@@ -56,6 +58,17 @@ class ExecutionEngine:
                         })
         except Exception as e:
             logger.error(f"Error restoring active broker session on startup: {e}")
+
+        # Check if daily summary has already been sent today
+        try:
+            with Session(db_engine) as session:
+                today = now_ist().date()
+                summary = session.exec(select(DailySummary).where(DailySummary.trade_date == today)).first()
+                if summary:
+                    self.daily_summary_sent[today.strftime("%Y-%m-%d")] = True
+                    logger.info(f"Loaded today's DailySummary from database. EOD Telegram notifications already completed.")
+        except Exception as e:
+            logger.warning(f"Could not load today's daily summary state on startup: {e}")
 
         asyncio.create_task(self.engine_loop())
 
@@ -821,6 +834,30 @@ class ExecutionEngine:
 
         while self.running:
             try:
+                # ── Start/End of Day Telegram Notifications ──
+                now = now_ist()
+                today_date = now.strftime("%Y-%m-%d")
+                now_time = now.time()
+
+                if self.telegram_bot:
+                    # 1. Start of Day notification (between 9:15 AM and 3:30 PM)
+                    if time(9, 15) <= now_time <= time(15, 30):
+                        if today_date not in self.daily_start_sent:
+                            self.daily_start_sent[today_date] = True
+                            await self.telegram_bot.send_message(
+                                f"🚀 <b>Stocker Engine is Working!</b>\n\n"
+                                f"Stocker automated trading core has booted successfully for today (<b>{now.strftime('%d-%b-%Y')}</b>) "
+                                f"and is actively monitoring options breakouts and strategy rules in the background.\n\n"
+                                f"🟢 <b>Status:</b> Live & Connected"
+                            )
+
+                    # 2. End of Day daily summary (at or after 3:30 PM)
+                    if now_time >= time(15, 30):
+                        if today_date not in self.daily_summary_sent:
+                            self.daily_summary_sent[today_date] = True
+                            logger.info(f"Triggering automated DailySummary report generation for {today_date}...")
+                            await self.telegram_bot.generate_and_send_daily_summary()
+
                 for strat_id, strategy in list(self.active_strategies.items()):
                     config = strategy.get_config()
                     if not config:
