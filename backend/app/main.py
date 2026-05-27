@@ -225,6 +225,20 @@ class BacktestRequest(BaseModel):
     days: int = 30
     initial_capital: float = 100000.0
 
+class TelegramBacktestReportRequest(BaseModel):
+    strategy_name: str
+    symbol: str
+    from_date: str
+    to_date: str
+    initial_capital: float
+    total_trades: int
+    win_rate: float
+    profitable_trades: int
+    losing_trades: int
+    net_pnl: float
+    final_capital: float
+    trades: List[Dict[str, Any]] = []
+
 class CredentialUpdate(BaseModel):
     broker_name: str
     api_key: str
@@ -933,6 +947,64 @@ async def send_ledger_telegram_report(
     try:
         await engine_instance.telegram_bot.send_message(msg)
         return {"status": "SUCCESS", "message": "Ledger summary successfully dispatched to Telegram."}
+    except Exception as e:
+        return {"status": "ERROR", "message": f"Telegram API Error: {e}"}
+
+@app.post("/api/backtest/telegram-report")
+async def send_backtest_telegram_report(payload: TelegramBacktestReportRequest):
+    if not engine_instance.telegram_bot:
+        return {"status": "ERROR", "message": "Telegram Bot is not configured."}
+
+    pnl_emoji = "🟩 +" if payload.net_pnl >= 0 else "🔴 "
+    pnl_pct = (payload.net_pnl / payload.initial_capital) * 100 if payload.initial_capital > 0 else 0.0
+    pnl_pct_str = f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}"
+
+    msg = (
+        f"📊 <b>STOCKER HISTORICAL BACKTEST BULLETIN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📂 <b>Strategy Name:</b> {payload.strategy_name}\n"
+        f"⚡ <b>Spot Instrument:</b> {payload.symbol}\n"
+        f"📅 <b>Backtest Period:</b> {payload.from_date} to {payload.to_date}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Initial Capital:</b> ₹{payload.initial_capital:,.2f}\n"
+        f"💰 <b>Final Capital:</b> ₹{payload.final_capital:,.2f}\n"
+        f"💸 <b>Net Realized P&L:</b> <b>{pnl_emoji}₹{payload.net_pnl:,.2f}</b> ({pnl_pct_str}%)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💼 <b>Total Simulated Trades:</b> {payload.total_trades}\n"
+        f"🎯 <b>Profitable Trades:</b> {payload.profitable_trades} ✅\n"
+        f"❌ <b>Losing Trades:</b> {payload.losing_trades} 🔻\n"
+        f"🏆 <b>Backtest Win Rate:</b> <b>{payload.win_rate:.1f}%</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    if payload.trades:
+        msg += f"📝 <b>Simulated Trade Log (Recent First):</b>\n"
+        recent_trades = payload.trades[:10]
+        for idx, t in enumerate(recent_trades, 1):
+            t_pnl = t.get("pnl") or 0.0
+            t_pnl_marker = "🟢 +" if t_pnl >= 0 else "🔴 "
+            opt_str = f" [{t.get('option_type')}]" if t.get("option_type") else ""
+            exit_reason = f" ({t.get('exit_reason')})" if t.get("exit_reason") else ""
+            entry_p = t.get("entry_price") or 0.0
+            exit_p = t.get("exit_price") or 0.0
+            
+            entry_time = t.get("entry_time") or ""
+            if "T" in entry_time:
+                entry_time = entry_time.replace("T", " ")[:19]
+            
+            msg += (
+                f"{idx}. <b>{t.get('symbol', 'Trade')}{opt_str}</b>\n"
+                f"   • <code>Entry: ₹{entry_p:.2f} ({entry_time})</code>\n"
+                f"   • <code>Exit:  ₹{exit_p:.2f}{exit_reason}</code>\n"
+                f"   • P&L: <b>{t_pnl_marker}₹{t_pnl:,.2f}</b> | Qty: {t.get('quantity')}\n\n"
+            )
+            
+        if len(payload.trades) > 10:
+            msg += f"<i>...and {len(payload.trades) - 10} more simulated trades in the backtest report.</i>"
+
+    try:
+        await engine_instance.telegram_bot.send_message(msg)
+        return {"status": "SUCCESS", "message": "Backtest report bulletin successfully dispatched to Telegram."}
     except Exception as e:
         return {"status": "ERROR", "message": f"Telegram API Error: {e}"}
 

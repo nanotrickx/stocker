@@ -32,6 +32,10 @@ export default function BacktestPage() {
   const [activeSection, setActiveSection] = useState<'chart'|'viz'|'trades'|'journal'>('chart');
   const [expandedJournal, setExpandedJournal] = useState<number | null>(null);
 
+  const [telegramSending, setTelegramSending] = useState(false);
+  const [telegramSent, setTelegramSent] = useState(false);
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+
   useEffect(() => {
     fetch(`${API_BASE}/api/strategies`).then(r=>r.json()).then(d=>{ setStrategies(d); if(d.length>0) setStratId(d[0].id); }).catch(()=>{});
   }, []);
@@ -39,6 +43,7 @@ export default function BacktestPage() {
   const run = async () => {
     if (!stratId) { setError('No strategy selected.'); return; }
     setRunning(true); setError(null); setResult(null);
+    setTelegramSent(false); setTelegramError(null);
     try {
       const body: any = { strategy_id: stratId, symbol, instrument_type: instrType, days, initial_capital: capital };
       if (instrType !== 'STOCK') { body.strike_price = parseFloat(strikePrice) || undefined; body.expiry_date = expiryDate || undefined; }
@@ -50,6 +55,58 @@ export default function BacktestPage() {
       else { setResult(data); setActiveSection(data.meta?.is_intraday ? 'chart' : 'viz'); }
     } catch { setError('Could not reach backend server.'); }
     finally { setRunning(false); }
+  };
+
+  const sendToTelegram = async () => {
+    if (!result || !result.summary) return;
+    setTelegramSending(true);
+    setTelegramSent(false);
+    setTelegramError(null);
+    try {
+      const activeStrategy = strategies.find(s => s.id === stratId);
+      const strategyName = activeStrategy ? activeStrategy.name : 'Unknown Strategy';
+      const body = {
+        strategy_name: strategyName,
+        symbol: symbol,
+        from_date: result.meta?.from ? result.meta.from.substring(0, 10) : (fromDate || 'N/A'),
+        to_date: result.meta?.to ? result.meta.to.substring(0, 10) : (toDate || 'N/A'),
+        initial_capital: result.summary.initial_capital,
+        total_trades: result.summary.total_trades,
+        win_rate: result.summary.win_rate,
+        profitable_trades: result.summary.profitable_trades,
+        losing_trades: result.summary.losing_trades,
+        net_pnl: result.summary.net_pnl,
+        final_capital: result.summary.final_capital,
+        trades: result.trades.map(t => ({
+          symbol: t.symbol,
+          option_type: t.instrument_type,
+          entry_time: t.entry_time,
+          exit_time: t.exit_time,
+          quantity: t.qty,
+          entry_price: t.entry_price,
+          exit_price: t.exit_price,
+          pnl: t.pnl,
+          exit_reason: t.exit_reason
+        }))
+      };
+      
+      const res = await fetch(`${API_BASE}/api/backtest/telegram-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (data.status === 'SUCCESS') {
+        setTelegramSent(true);
+        setTimeout(() => setTelegramSent(false), 3000);
+      } else {
+        setTelegramError(data.message || 'Failed to dispatch report.');
+      }
+    } catch {
+      setTelegramError('Could not reach backend server.');
+    } finally {
+      setTelegramSending(false);
+    }
   };
 
   const pnlColor = (v: number) => v >= 0 ? '#10B981' : '#EF4444';
@@ -286,10 +343,31 @@ export default function BacktestPage() {
 
           {/* Meta info bar */}
           {result.meta && (
-            <div style={{ display:'flex', gap:'16px', flexWrap:'wrap', padding:'12px 18px', background:'rgba(255,255,255,0.03)', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.06)', fontSize:'12px', color:'var(--text-secondary)' }}>
-              <span>📌 <strong>{result.meta.symbol}</strong> · {result.meta.instrument_type}</span>
-              <span>📅 {result.meta.from} → {result.meta.to}</span>
-              <span>🕯️ {result.meta.candles_used} candles</span>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'16px', flexWrap:'wrap', padding:'12px 18px', background:'rgba(255,255,255,0.03)', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.06)', fontSize:'12px', color:'var(--text-secondary)' }}>
+              <div style={{ display:'flex', gap:'16px', flexWrap:'wrap' }}>
+                <span>📌 <strong>{result.meta.symbol}</strong> · {result.meta.instrument_type}</span>
+                <span>📅 {result.meta.from} → {result.meta.to}</span>
+                <span>🕯️ {result.meta.candles_used} candles</span>
+              </div>
+              <div>
+                <button onClick={sendToTelegram} disabled={telegramSending}
+                  style={{
+                    padding:'6px 14px', borderRadius:'16px', fontSize:'11px', fontWeight:700, cursor: telegramSending ? 'not-allowed' : 'pointer',
+                    background: telegramSent ? '#10B981' : 'rgba(99,102,241,0.15)',
+                    color: telegramSent ? '#fff' : '#818CF8',
+                    border: telegramSent ? '1px solid #10B981' : '1px solid rgba(99,102,241,0.3)',
+                    transition:'all .15s ease',
+                    display:'flex', alignItems:'center', gap:'6px'
+                  }}>
+                  {telegramSending ? '📤 Dispatching...' : telegramSent ? '✅ Dispatched to Telegram!' : '✈️ Send Report to Telegram'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {telegramError && (
+            <div style={{ display:'flex', gap:'10px', background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.25)', borderRadius:'8px', padding:'10px 14px', color:'#EF4444', fontSize:'12px' }}>
+              <AlertCircle size={15} style={{ flexShrink:0 }} /><span>{telegramError}</span>
             </div>
           )}
 
