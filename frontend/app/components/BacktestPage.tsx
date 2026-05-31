@@ -11,6 +11,21 @@ interface SimTrade { symbol: string; instrument_type: string; entry_time: string
 interface Summary { initial_capital: number; final_capital: number; net_pnl: number; total_return_pct: number; total_trades: number; profitable_trades: number; losing_trades: number; win_rate: number; max_drawdown_pct: number; }
 interface BacktestResult { status: string; message?: string; meta?: Record<string, any>; summary: Summary; equity_curve: {date:string;balance:number}[]; visualization: VizBar[]; trades: SimTrade[]; journal: JournalEntry[]; }
 
+function parseTimestampToUTC(tsStr: string): UTCTimestamp {
+  const clean = tsStr.replace('T', ' ').replace(/\.\d+$/, '');
+  const parts = clean.split(/[- :]/);
+  if (parts.length < 5) {
+    return Math.floor(new Date(tsStr).getTime() / 1000) as UTCTimestamp;
+  }
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+  const hour = parseInt(parts[3], 10);
+  const minute = parseInt(parts[4], 10);
+  const second = parseInt(parts[5] || '0', 10);
+  return Math.floor(Date.UTC(year, month, day, hour, minute, second) / 1000) as UTCTimestamp;
+}
+
 function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +59,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     });
 
     const data = visualization.map(b => {
-      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
+      const epoch = parseTimestampToUTC(b.ts);
       return {
         time: epoch,
         open: b.open,
@@ -60,7 +75,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     const markers = visualization
       .map(b => {
         if (b.signal === 'BUY') {
-          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
+          const epoch = parseTimestampToUTC(b.ts);
           return {
             time: epoch,
             position: 'belowBar' as const,
@@ -70,7 +85,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
           };
         }
         if (b.signal === 'SELL') {
-          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
+          const epoch = parseTimestampToUTC(b.ts);
           return {
             time: epoch,
             position: 'aboveBar' as const,
@@ -134,7 +149,7 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
     });
 
     const data = visualization.map((b, idx) => {
-      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
+      const epoch = parseTimestampToUTC(b.ts);
       const premium = type === 'CE' ? (b.indicators?.ce_premium ?? 0) : (b.indicators?.pe_premium ?? 0);
       
       const prevBar = idx > 0 ? visualization[idx - 1] : null;
