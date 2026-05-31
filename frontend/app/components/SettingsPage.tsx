@@ -363,24 +363,24 @@ export default function SettingsPage({
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Client ID</label>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Client ID / API Key</label>
                 <input 
                   type="text" 
                   value={dhanClientId} 
                   onChange={(e) => setDhanClientId(e.target.value)} 
                   className="input-glass" 
-                  placeholder="Enter Dhan Client ID"
+                  placeholder="Enter Dhan Client ID or API Key (e.g. 9203be84)"
                   style={{ padding: '10px', fontSize: '12px' }}
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan API Key</label>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan API Key / API Secret</label>
                 <input 
                   type="password" 
                   value={dhanAccessToken} 
                   onChange={(e) => setDhanAccessToken(e.target.value)} 
                   className="input-glass" 
-                  placeholder="Enter Dhan API Key"
+                  placeholder="Enter Dhan Access Token or API Secret"
                   style={{ padding: '10px', fontSize: '12px' }}
                 />
               </div>
