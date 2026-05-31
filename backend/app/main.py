@@ -63,40 +63,7 @@ async def on_startup():
     asyncio.create_task(broadcast_stream_task())
 
 
-def get_dhan_token(active_cred: BrokerCredential, session: Session) -> Optional[str]:
-    if active_cred.broker_name == "dhan":
-        if active_cred.totp_secret and len(active_cred.totp_secret.strip()) > 4:
-            from datetime import date
-            import time
-            from app.database import now_ist
-            import requests
-            
-            today = now_ist().date()
-            token_date = active_cred.updated_at.date() if active_cred.updated_at else None
-            
-            if not active_cred.access_token or token_date != today:
-                try:
-                    from app.brokers.dhan import get_totp
-                    totp_code = get_totp(active_cred.totp_secret)
-                    if totp_code:
-                        url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={active_cred.api_key}&pin={active_cred.api_secret}&totp={totp_code}"
-                        resp = requests.post(url, timeout=10)
-                        if resp.status_code == 200:
-                            gen_token = resp.json().get("access_token")
-                            if gen_token:
-                                active_cred.access_token = gen_token
-                                active_cred.updated_at = now_ist()
-                                session.add(active_cred)
-                                session.commit()
-                                logger.info("🟢 Programmatically auto-renewed Dhan access token for today.")
-                                return gen_token
-                        else:
-                            logger.error(f"🔴 Auto-renewal of Dhan token failed: {resp.status_code} - {resp.text}")
-                except Exception as e:
-                    logger.error(f"🔴 Error auto-renewing Dhan token: {e}")
-        
-        return active_cred.access_token or active_cred.api_secret
-    return None
+from app.brokers.dhan import get_dhan_token
 
 def _seed_default_strategies():
     """Create built-in strategy templates if they don't already exist."""
