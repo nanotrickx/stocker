@@ -1,8 +1,12 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
+import { ModuleRegistry, AllCommunityModule } from 'ag-charts-community';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
+
+// Register AG Charts modules once at module initialization
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 const AgCharts = dynamic(
   () => import('ag-charts-react').then((mod) => mod.AgCharts),
