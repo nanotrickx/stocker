@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
-import { createChart, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
+import { createChart, CandlestickSeries, createSeriesMarkers, UTCTimestamp } from 'lightweight-charts';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
 
@@ -44,7 +44,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     });
 
     const data = visualization.map(b => {
-      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
       return {
         time: epoch,
         open: b.open,
@@ -60,7 +60,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     const markers = visualization
       .map(b => {
         if (b.signal === 'BUY') {
-          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
           return {
             time: epoch,
             position: 'belowBar' as const,
@@ -70,7 +70,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
           };
         }
         if (b.signal === 'SELL') {
-          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
           return {
             time: epoch,
             position: 'aboveBar' as const,
