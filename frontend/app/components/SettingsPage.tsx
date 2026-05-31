@@ -374,13 +374,13 @@ export default function SettingsPage({
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan JWT Access Token</label>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan API Key</label>
                 <input 
                   type="password" 
                   value={dhanAccessToken} 
                   onChange={(e) => setDhanAccessToken(e.target.value)} 
                   className="input-glass" 
-                  placeholder="Enter Dhan Access Token"
+                  placeholder="Enter Dhan API Key"
                   style={{ padding: '10px', fontSize: '12px' }}
                 />
               </div>

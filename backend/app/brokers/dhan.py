@@ -18,7 +18,7 @@ class DhanBroker(BaseBroker):
         self.client_id = credentials.get("client_id") or credentials.get("api_key")
         self.access_token = credentials.get("access_token") or credentials.get("api_secret")
         if not self.client_id or not self.access_token:
-            logger.error("Dhan Client ID or Access Token is missing in login credentials.")
+            logger.error("Dhan Client ID or Access Token/API Key is missing in login credentials.")
             return False
         
         self._headers = {
