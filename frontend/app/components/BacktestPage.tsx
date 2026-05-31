@@ -540,6 +540,66 @@ export default function BacktestPage() {
                 <span style={{ color:'rgba(16,185,129,0.7)' }}>█ Bullish</span>
                 <span style={{ color:'rgba(239,68,68,0.7)' }}>█ Bearish</span>
               </div>
+
+              {/* Option Premiums Chart */}
+              {bars[0]?.indicators?.ce_premium !== undefined && (
+                <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '20px' }}>
+                  <h4 style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Activity size={15} style={{ color: '#6366F1' }} /> Option Premium Series (ATM CE & PE Strikes)
+                  </h4>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '14px' }}>
+                    Real-time premium movement for selected CE/PE contracts. <span style={{ color: '#60A5FA', fontWeight: 600 }}>● ATM CE Premium</span> · <span style={{ color: '#FB923C', fontWeight: 600 }}>● ATM PE Premium</span>
+                  </p>
+                  
+                  <div style={{ overflowX: 'auto', paddingBottom: '8px' }}>
+                    {(() => {
+                      const cePrems = bars.map(b => b.indicators?.ce_premium ?? 0);
+                      const pePrems = bars.map(b => b.indicators?.pe_premium ?? 0);
+                      const maxPrem = Math.max(...cePrems, ...pePrems, 10);
+                      const minPrem = Math.min(...cePrems.filter(p => p > 0), ...pePrems.filter(p => p > 0), 0);
+                      const premRange = maxPrem - minPrem || 1;
+                      const premChartH = 120;
+                      const toPremY = (p: number) => premChartH - ((p - minPrem) / premRange) * premChartH;
+                      const barW = Math.max(6, Math.min(14, Math.floor(800 / bars.length)));
+                      const totalW = bars.length * (barW + 2);
+                      
+                      const cePath = cePrems.map((p, idx) => {
+                        const cx = idx * (barW + 2) + 1 + barW / 2;
+                        return `${idx === 0 ? 'M' : 'L'}${cx},${toPremY(p)}`;
+                      }).join(' ');
+
+                      const pePath = pePrems.map((p, idx) => {
+                        const cx = idx * (barW + 2) + 1 + barW / 2;
+                        return `${idx === 0 ? 'M' : 'L'}${cx},${toPremY(p)}`;
+                      }).join(' ');
+
+                      return (
+                        <svg width={totalW} height={premChartH + 20} style={{ display: 'block', minWidth: '100%' }}>
+                          {[0, 0.5, 1].map(pct => {
+                            const y = pct * premChartH;
+                            const val = maxPrem - pct * premRange;
+                            return <g key={pct}>
+                              <line x1={0} x2={totalW} y1={y} y2={y} stroke="rgba(255,255,255,0.03)" strokeWidth={1} />
+                              <text x={4} y={y - 3} fill="rgba(255,255,255,0.25)" fontSize={9}>₹{val.toFixed(1)}</text>
+                            </g>;
+                          })}
+                          
+                          <path d={cePath} fill="none" stroke="#60A5FA" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" />
+                          <path d={pePath} fill="none" stroke="#FB923C" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" />
+
+                          {bars.map((bar, i) => {
+                            const cx = i * (barW + 2) + 1 + barW / 2;
+                            if (bar.signal === 'BUY' || bar.signal === 'SELL') {
+                              return <line key={i} x1={cx} x2={cx} y1={0} y2={premChartH} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3,3" />;
+                            }
+                            return null;
+                          })}
+                        </svg>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -664,6 +664,41 @@ class ORBStrategyEngine:
                     indicators["target"] = state.target_price
                     indicators["sl"] = state.stop_loss_price
 
+                # Calculate current option premiums dynamically for indicators series
+                current_ce_premium = 0.0
+                current_pe_premium = 0.0
+                if state.selected_ce_strike is not None:
+                    real_ce_prem = None
+                    api_ce_candle = ce_price_map.get(bar_min_str)
+                    if api_ce_candle:
+                        real_ce_prem = api_ce_candle["close"]
+                    elif current_snapshot:
+                        for opt in current_snapshot.get("chain", []):
+                            if opt["strike"] == state.selected_ce_strike:
+                                real_ce_prem = opt["CE_price"]
+                    if real_ce_prem and real_ce_prem > 0:
+                        current_ce_premium = real_ce_prem
+                    else:
+                        current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+
+                if state.selected_pe_strike is not None:
+                    real_pe_prem = None
+                    api_pe_candle = pe_price_map.get(bar_min_str)
+                    if api_pe_candle:
+                        real_pe_prem = api_pe_candle["close"]
+                    elif current_snapshot:
+                        for opt in current_snapshot.get("chain", []):
+                            if opt["strike"] == state.selected_pe_strike:
+                                real_pe_prem = opt["PE_price"]
+                    if real_pe_prem and real_pe_prem > 0:
+                        current_pe_premium = real_pe_prem
+                    else:
+                        current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
+
+                if state.selected_ce_strike is not None:
+                    indicators["ce_premium"] = current_ce_premium
+                    indicators["pe_premium"] = current_pe_premium
+
                 visualization.append({
                     "ts": ts,
                     "open": row["open"],
