@@ -101,6 +101,77 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
   return <div ref={chartContainerRef} style={{ width: '100%', height: '360px' }} />;
 }
 
+function LightweightOptionChart({ visualization, type }: { visualization: VizBar[], type: 'CE' | 'PE' }) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+
+    const container = chartContainerRef.current;
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: 260,
+      layout: {
+        background: { type: 'solid' as const, color: 'rgba(0, 0, 0, 0.4)' },
+        textColor: '#d1d4dc',
+      },
+      grid: {
+        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
+        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+      },
+    });
+
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
+      upColor: type === 'CE' ? '#60A5FA' : '#FB923C', // Gorgeous Blue for CE, Orange for PE!
+      downColor: '#EF4444',
+      borderVisible: false,
+      wickUpColor: type === 'CE' ? '#60A5FA' : '#FB923C',
+      wickDownColor: '#EF4444',
+    });
+
+    const data = visualization.map((b, idx) => {
+      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000) as UTCTimestamp;
+      const premium = type === 'CE' ? (b.indicators?.ce_premium ?? 0) : (b.indicators?.pe_premium ?? 0);
+      
+      const prevBar = idx > 0 ? visualization[idx - 1] : null;
+      const prevPremium = prevBar ? (type === 'CE' ? (prevBar.indicators?.ce_premium ?? premium) : (prevBar.indicators?.pe_premium ?? premium)) : premium;
+      
+      const open = prevPremium || premium || 10;
+      const close = premium || open || 10;
+      const high = Math.max(open, close) + Math.abs(open - close) * 0.25 + 0.5;
+      const low = Math.max(0.5, Math.min(open, close) - Math.abs(open - close) * 0.25 - 0.5);
+
+      return {
+        time: epoch,
+        open,
+        high,
+        low,
+        close,
+      };
+    });
+
+    candlestickSeries.setData(data);
+    chart.timeScale().fitContent();
+
+    const handleResize = () => {
+      chart.applyOptions({ width: container.clientWidth });
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      chart.remove();
+    };
+  }, [visualization, type]);
+
+  return <div ref={chartContainerRef} style={{ width: '100%', height: '260px' }} />;
+}
+
 const SYMBOLS = ['NSE:NIFTY 50','NSE:NIFTY BANK','NSE:RELIANCE','NSE:TCS','NSE:INFY','NSE:HDFCBANK','NSE:ICICIBANK','NSE:SBIN','NSE:WIPRO','NSE:BAJFINANCE','NSE:TATAMOTORS'];
 
 export default function BacktestPage() {
@@ -122,6 +193,7 @@ export default function BacktestPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<'chart'|'viz'|'trades'|'journal'>('chart');
   const [expandedJournal, setExpandedJournal] = useState<number | null>(null);
+  const [optionChartType, setOptionChartType] = useState<'CE' | 'PE'>('CE');
 
   const [telegramSending, setTelegramSending] = useState(false);
   const [telegramSent, setTelegramSent] = useState(false);
@@ -581,63 +653,58 @@ export default function BacktestPage() {
                 <span style={{ color:'rgba(239,68,68,0.7)' }}>█ Bearish</span>
               </div>
 
-              {/* Option Premiums Chart */}
+              {/* Option Chain Candlestick Chart */}
               {result.visualization[0]?.indicators?.ce_premium !== undefined && (
                 <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '20px' }}>
-                  <h4 style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Activity size={15} style={{ color: '#6366F1' }} /> Option Premium Series (ATM CE & PE Strikes)
-                  </h4>
-                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '14px' }}>
-                    Real-time premium movement for selected CE/PE contracts. <span style={{ color: '#60A5FA', fontWeight: 600 }}>● ATM CE Premium</span> · <span style={{ color: '#FB923C', fontWeight: 600 }}>● ATM PE Premium</span>
-                  </p>
-                  
-                  <div style={{ overflowX: 'auto', paddingBottom: '8px' }}>
-                    {(() => {
-                      const bars = result.visualization;
-                      const cePrems = bars.map(b => b.indicators?.ce_premium ?? 0);
-                      const pePrems = bars.map(b => b.indicators?.pe_premium ?? 0);
-                      const maxPrem = Math.max(...cePrems, ...pePrems, 10);
-                      const minPrem = Math.min(...cePrems.filter(p => p > 0), ...pePrems.filter(p => p > 0), 0);
-                      const premRange = maxPrem - minPrem || 1;
-                      const premChartH = 120;
-                      const toPremY = (p: number) => premChartH - ((p - minPrem) / premRange) * premChartH;
-                      const barW = Math.max(6, Math.min(14, Math.floor(800 / bars.length)));
-                      const totalW = bars.length * (barW + 2);
-                      
-                      const cePath = cePrems.map((p, idx) => {
-                        const cx = idx * (barW + 2) + 1 + barW / 2;
-                        return `${idx === 0 ? 'M' : 'L'}${cx},${toPremY(p)}`;
-                      }).join(' ');
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                    <div>
+                      <h4 style={{ fontSize: '13px', fontWeight: 700, marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Activity size={15} style={{ color: '#6366F1' }} /> ATM Option Premium Candlesticks
+                      </h4>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        TradingView candlestick series mapping simulated OHLC values for option premiums.
+                      </p>
+                    </div>
+                    
+                    {/* Toggle Buttons */}
+                    <div style={{ display: 'flex', gap: '6px', background: 'rgba(255,255,255,0.03)', padding: '2px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <button
+                        onClick={() => setOptionChartType('CE')}
+                        style={{
+                          padding: '6px 14px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          borderRadius: '4px',
+                          border: 'none',
+                          cursor: 'pointer',
+                          background: optionChartType === 'CE' ? 'rgba(96, 165, 250, 0.15)' : 'transparent',
+                          color: optionChartType === 'CE' ? '#60A5FA' : 'var(--text-muted)',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        🔵 Call Option (CE)
+                      </button>
+                      <button
+                        onClick={() => setOptionChartType('PE')}
+                        style={{
+                          padding: '6px 14px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          borderRadius: '4px',
+                          border: 'none',
+                          cursor: 'pointer',
+                          background: optionChartType === 'PE' ? 'rgba(251, 146, 60, 0.15)' : 'transparent',
+                          color: optionChartType === 'PE' ? '#FB923C' : 'var(--text-muted)',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        🟠 Put Option (PE)
+                      </button>
+                    </div>
+                  </div>
 
-                      const pePath = pePrems.map((p, idx) => {
-                        const cx = idx * (barW + 2) + 1 + barW / 2;
-                        return `${idx === 0 ? 'M' : 'L'}${cx},${toPremY(p)}`;
-                      }).join(' ');
-
-                      return (
-                        <svg width={totalW} height={premChartH + 20} style={{ display: 'block', minWidth: '100%' }}>
-                          {[0, 0.5, 1].map(pct => {
-                            const y = pct * premChartH;
-                            const val = maxPrem - pct * premRange;
-                            return <g key={pct}>
-                              <line x1={0} x2={totalW} y1={y} y2={y} stroke="rgba(255,255,255,0.03)" strokeWidth={1} />
-                              <text x={4} y={y - 3} fill="rgba(255,255,255,0.25)" fontSize={9}>₹{val.toFixed(1)}</text>
-                            </g>;
-                          })}
-                          
-                          <path d={cePath} fill="none" stroke="#60A5FA" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" />
-                          <path d={pePath} fill="none" stroke="#FB923C" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" />
-
-                          {bars.map((bar, i) => {
-                            const cx = i * (barW + 2) + 1 + barW / 2;
-                            if (bar.signal === 'BUY' || bar.signal === 'SELL') {
-                              return <line key={i} x1={cx} x2={cx} y1={0} y2={premChartH} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="3,3" />;
-                            }
-                            return null;
-                          })}
-                        </svg>
-                      );
-                    })()}
+                  <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <LightweightOptionChart visualization={result.visualization} type={optionChartType} />
                   </div>
                 </div>
               )}
