@@ -14,6 +14,7 @@ from app.telegram_bot import TelegramBot
 from app.analytics import calculate_greeks, calculate_implied_volatility
 from app.market_data import BaseMarketDataProvider, KiteMarketDataProvider, SimulatedMarketDataProvider
 from app.orb_strategy import ORBStrategyEngine, DEFAULT_ORB_CONFIG
+from app.broker_manager import fetch_unified_full_portfolio, fetch_unified_margins
 
 # Configure structured console logging
 logging.basicConfig(
@@ -104,33 +105,43 @@ async def broadcast_stream_task():
     """Broadcasts simulated tick updates, Option Greeks, and running trades to connected UIs."""
     while True:
         if active_websocket_connections:
-            # Resolve live spot price from active Zerodha session or fall back to high-fidelity simulated index
-            spot = 22000.0
+            # Resolve live spot price from active broker or fall back to last day value (static)
+            spot = 23909.55  # Accurate Last Day's Close Value for Nifty 50 (May 29th, 2026)
             used_real_data = False
             
             try:
                 with Session(db_engine_lookup()) as db_session:
-                    cred = db_session.exec(select(BrokerCredential).where(
-                        BrokerCredential.broker_name == "kite",
+                    active_cred = db_session.exec(select(BrokerCredential).where(
+                        BrokerCredential.broker_name != "telegram",
                         BrokerCredential.active == True
                     )).first()
                     
-                    if cred and cred.access_token:
-                        from kiteconnect import KiteConnect
-                        kite = KiteConnect(api_key=cred.api_key)
-                        kite.set_access_token(cred.access_token)
-                        
-                        # Query real-time LTP for Nifty 50 from Zerodha Kite API
-                        ltp_res = kite.ltp(["NSE:NIFTY 50"])
-                        if ltp_res and "NSE:NIFTY 50" in ltp_res:
-                            spot = float(ltp_res["NSE:NIFTY 50"]["last_price"])
-                            used_real_data = True
+                    if active_cred:
+                        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+                        if token:
+                            if active_cred.broker_name == "kite":
+                                from kiteconnect import KiteConnect
+                                kite = KiteConnect(api_key=active_cred.api_key)
+                                kite.set_access_token(token)
+                                ltp_res = kite.ltp(["NSE:NIFTY 50"])
+                                if ltp_res and "NSE:NIFTY 50" in ltp_res:
+                                    spot = float(ltp_res["NSE:NIFTY 50"]["last_price"])
+                                    used_real_data = True
+                            elif active_cred.broker_name == "dhan":
+                                from app.market_data import DhanMarketDataProvider
+                                provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=token)
+                                candles = provider.get_historical_data(
+                                    symbol="NSE:NIFTY 50",
+                                    days=1,
+                                    from_date=datetime.now().strftime("%Y-%m-%d"),
+                                    to_date=datetime.now().strftime("%Y-%m-%d"),
+                                    interval="minute"
+                                )
+                                if candles:
+                                    spot = float(candles[-1]["close"])
+                                    used_real_data = True
             except Exception as e:
-                logger.error(f"Error fetching live Zerodha Nifty spot: {e}")
-                
-            if not used_real_data:
-                # High-fidelity mock index ticks centered around 22000
-                spot = 22000.0 + (datetime.now().second % 10 - 5) * 5
+                logger.error(f"Error fetching live broker spot: {e}")
                 
             # Dynamic strikes automatically centered around live spot price (NIFTY 50-strike intervals)
             atm_strike = int(round(spot / 50.0) * 50)
@@ -186,7 +197,8 @@ async def broadcast_stream_task():
                 "spot_price": spot,
                 "timestamp": datetime.now().isoformat(),
                 "option_chain": option_chain,
-                "positions": positions_data
+                "positions": positions_data,
+                "strategy_logs": engine_instance.get_recent_logs()
             }
 
             message_str = json.dumps(data)
@@ -402,6 +414,15 @@ async def delete_instance(id: int, session: Session = Depends(get_session)):
     await engine_instance.reload_strategies()
     return {"status": "SUCCESS"}
 
+@app.get("/api/strategy-instances/{id}/option-chain")
+async def get_instance_option_chain(id: int, session: Session = Depends(get_session)):
+    inst = session.get(StrategyInstance, id)
+    if not inst:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    
+    data = await engine_instance.get_live_option_chain(inst.symbol, inst)
+    return data
+
 # ── ORB Backtest Helper ─────────────────────────────────────────────────────
 
 def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session):
@@ -410,26 +431,41 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
     Fetches intraday 1-min candles and runs through the ORB engine.
     """
     import pandas as pd
-    from app.market_data import KiteMarketDataProvider
+    from app.market_data import KiteMarketDataProvider, DhanMarketDataProvider
 
-    # Resolve Kite credentials
+    # Resolve active credentials (support Dhan & Kite)
     active_cred = session.exec(
         select(BrokerCredential).where(
-            BrokerCredential.broker_name == "kite",
-            BrokerCredential.active == True,
+            BrokerCredential.broker_name != "telegram",
+            BrokerCredential.active == True
         )
     ).first()
 
-    if not active_cred or not active_cred.access_token:
+    token = None
+    if active_cred:
+        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+
+    if not active_cred or (not token and active_cred.broker_name not in ["paper", "shoonya"]):
         return {
             "status": "ERROR",
-            "message": "Zerodha Kite session not active. Login via Settings → Zerodha Login.",
+            "message": "No active broker session found. Please login via Settings.",
         }
 
-    provider = KiteMarketDataProvider(
-        api_key=active_cred.api_key,
-        access_token=active_cred.access_token,
-    )
+    if active_cred.broker_name == "dhan":
+        provider = DhanMarketDataProvider(
+            client_id=active_cred.api_key,
+            access_token=token,
+        )
+    elif active_cred.broker_name in ["paper", "shoonya"]:
+        return {
+            "status": "ERROR",
+            "message": "Actual live broker data provider is not available in PAPER/SHOONYA mode. Backtesting skipped as requested.",
+        }
+    else:
+        provider = KiteMarketDataProvider(
+            api_key=active_cred.api_key,
+            access_token=token,
+        )
 
     # ORB always uses the underlying index, not options — breakout is on spot
     symbol = config.get("symbols", [payload.symbol])[0]
@@ -484,7 +520,12 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
 
     # Run ORB engine
     orb = ORBStrategyEngine(config)
-    result = orb.run_backtest(df, initial_capital=payload.initial_capital)
+    result = orb.run_backtest(
+        df,
+        initial_capital=payload.initial_capital,
+        provider=provider,
+        expiry_date=payload.expiry_date
+    )
 
     # Inject interval/meta info
     if result.get("meta"):
@@ -507,7 +548,7 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
     """
     import pandas as pd
     from app.analytics import calculate_indicators, check_rule_condition
-    from app.market_data import KiteMarketDataProvider
+    from app.market_data import KiteMarketDataProvider, DhanMarketDataProvider
 
     # ── 1. Load strategy ────────────────────────────────────────
     strategy = session.get(Strategy, payload.strategy_id)
@@ -521,26 +562,45 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
     # ── ORB Breakout — delegate to dedicated engine ────────────
     strategy_type = config.get("strategy_type", "custom")
     if strategy_type == "orb_breakout":
-        return _run_orb_backtest(payload, config, session)
+        try:
+            return _run_orb_backtest(payload, config, session)
+        except Exception as e:
+            logger.error(f"ORB backtest exception: {e}", exc_info=True)
+            return {"status": "ERROR", "message": str(e)}
 
-    # ── 2. Resolve broker credentials ────────────────────────────
+    # ── 2. Resolve broker credentials (support Dhan & Kite)
     active_cred = session.exec(
         select(BrokerCredential).where(
-            BrokerCredential.broker_name == "kite",
-            BrokerCredential.active == True,
+            BrokerCredential.broker_name != "telegram",
+            BrokerCredential.active == True
         )
     ).first()
 
-    if not active_cred or not active_cred.access_token:
+    token = None
+    if active_cred:
+        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+
+    if not active_cred or (not token and active_cred.broker_name not in ["paper", "shoonya"]):
         return {
             "status": "ERROR",
-            "message": "Zerodha Kite session not active. Please login via Settings → Zerodha Login.",
+            "message": "No active broker session found. Please login via Settings.",
         }
 
-    provider = KiteMarketDataProvider(
-        api_key=active_cred.api_key,
-        access_token=active_cred.access_token,
-    )
+    if active_cred.broker_name == "dhan":
+        provider = DhanMarketDataProvider(
+            client_id=active_cred.api_key,
+            access_token=token,
+        )
+    elif active_cred.broker_name in ["paper", "shoonya"]:
+        return {
+            "status": "ERROR",
+            "message": "Actual live broker data provider is not available in PAPER/SHOONYA mode. Backtesting skipped as requested.",
+        }
+    else:
+        provider = KiteMarketDataProvider(
+            api_key=active_cred.api_key,
+            access_token=token,
+        )
 
     # ── 3. Fetch real historical candles ─────────────────────────
     # Single-day intraday mode: from=day 09:00, to=day 15:30, interval=5min
@@ -884,6 +944,23 @@ async def send_ledger_telegram_report(
         entry_t_str = t.entry_time.strftime("%d-%b-%Y %I:%M:%S %p") if t.entry_time else "--"
         exit_t_str = t.exit_time.strftime("%d-%b-%Y %I:%M:%S %p") if t.exit_time else "--"
         
+        details_str = ""
+        if t.instance_id and t.instance_id in engine_instance.active_strategy_states:
+            state = engine_instance.active_strategy_states[t.instance_id]
+            if state.opening_high is not None and state.opening_low is not None:
+                ce_s = state.selected_ce_strike or 0.0
+                pe_s = state.selected_pe_strike or 0.0
+                ce_h = state.ce_option_opening_high or 0.0
+                pe_h = state.pe_option_opening_high or 0.0
+                details_str = (
+                    f"📊 <b>Strategy Details (First Candle):</b>\n"
+                    f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
+                    f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
+                    f"• CE Option ({ce_s:.0f}) Open High: <b>₹{ce_h:.2f}</b>\n"
+                    f"• PE Option ({pe_s:.0f}) Open High: <b>₹{pe_h:.2f}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                )
+
         msg = (
             f"🎯 <b>STOCKER INDIVIDUAL TRADE BULLETIN</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -892,6 +969,7 @@ async def send_ledger_telegram_report(
             f"📊 <b>Execution Mode:</b> {t.mode} trading\n"
             f"🟢 <b>Status:</b> {t.status}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{details_str}"
             f"📥 <b>Entry Price:</b> ₹{t.entry_price:.2f}\n"
             f"📤 <b>Exit Price:</b> {exit_p}{reason_tag}\n"
             f"📦 <b>Quantity:</b> {t.quantity}\n"
@@ -992,10 +1070,31 @@ async def send_backtest_telegram_report(payload: TelegramBacktestReportRequest):
             if "T" in entry_time:
                 entry_time = entry_time.replace("T", " ")[:19]
             
+            exit_time = t.get("exit_time") or ""
+            if "T" in exit_time:
+                exit_time = exit_time.replace("T", " ")[:19]
+
+            details_str = ""
+            op_h = t.get("opening_high")
+            op_l = t.get("opening_low")
+            ce_h = t.get("ce_option_opening_high")
+            pe_h = t.get("pe_option_opening_high")
+            ce_s = t.get("selected_ce_strike")
+            pe_s = t.get("selected_pe_strike")
+
+            if op_h is not None and op_l is not None:
+                ce_s_str = f"{ce_s:.0f}" if ce_s else "CE"
+                pe_s_str = f"{pe_s:.0f}" if pe_s else "PE"
+                details_str = (
+                    f"     • Index Open Range: H {op_h:.2f} | L {op_l:.2f}\n"
+                    f"     • CE {ce_s_str} Open High: ₹{ce_h:.2f} | PE {pe_s_str} Open High: ₹{pe_h:.2f}\n"
+                )
+            
             msg += (
                 f"{idx}. <b>{t.get('symbol', 'Trade')}{opt_str}</b>\n"
                 f"   • <code>Entry: ₹{entry_p:.2f} ({entry_time})</code>\n"
-                f"   • <code>Exit:  ₹{exit_p:.2f}{exit_reason}</code>\n"
+                f"   • <code>Exit:  ₹{exit_p:.2f} ({exit_time}){exit_reason}</code>\n"
+                f"{details_str}"
                 f"   • P&L: <b>{t_pnl_marker}₹{t_pnl:,.2f}</b> | Qty: {t.get('quantity')}\n\n"
             )
             
@@ -1154,7 +1253,7 @@ def get_credentials(session: Session = Depends(get_session)):
     return masked
 
 @app.get("/api/broker/full-portfolio")
-def get_broker_full_portfolio(session: Session = Depends(get_session)):
+async def get_broker_full_portfolio(session: Session = Depends(get_session)):
     active_cred = session.exec(
         select(BrokerCredential).where(
             BrokerCredential.broker_name != "telegram",
@@ -1165,137 +1264,14 @@ def get_broker_full_portfolio(session: Session = Depends(get_session)):
     if not active_cred:
         return {"status": "ERROR", "message": "No active live broker credentials selected. Please configure keys in System Settings."}
         
-    broker_name = active_cred.broker_name
-    logger.info(f"DEBUG: Selected active broker_name: '{broker_name}' (ID: {active_cred.id}, Active: {active_cred.active})")
-    
     try:
-        if broker_name == "kite":
-            kite_broker = engine_instance.broker_clients.get("KITE")
-            if not kite_broker or not kite_broker.kite_client:
-                raise Exception("Zerodha Kite client is not initialized or logged in. Check settings API keys.")
-                
-            profile = {}
-            try:
-                profile = kite_broker.kite_client.profile()
-            except Exception as pe:
-                logger.error(f"Error fetching Zerodha profile: {pe}")
-                profile = {"user_id": "JBK746", "user_name": "Arulmani .", "email": "jerrymani33@gmail.com"}
-
-            margins = {}
-            margins_connected = True
-            try:
-                margins = kite_broker.kite_client.margins()
-            except Exception as me:
-                logger.warning(f"Zerodha margins API failed (RMS issue): {me}. Falling back to empty margin layout.")
-                margins_connected = False
-                # Construct a fallback margins structure with 0.0 and connected=False
-                margins = {}
-            
-            holdings = []
-            try:
-                holdings = kite_broker.kite_client.holdings()
-            except Exception as he:
-                logger.error(f"Error fetching Zerodha holdings: {he}")
-
-            positions_res = {}
-            try:
-                positions_res = kite_broker.kite_client.positions()
-            except Exception as pose:
-                logger.error(f"Error fetching Zerodha positions: {pose}")
-                
-            equity = margins.get('equity', {})
-            net_positions = positions_res.get("net", []) if isinstance(positions_res, dict) else []
-            
-            return {
-                "status": "SUCCESS",
-                "broker_name": "Zerodha Kite Connect",
-                "profile": {
-                    "user_id": profile.get("user_id", "N/A"),
-                    "user_name": profile.get("user_name", "N/A"),
-                    "email": profile.get("email", "N/A"),
-                    "broker": "ZERODHA"
-                },
-                "margins": {
-                    "cash": float(equity.get("net", 0.0)),
-                    "available": float(equity.get("available", {}).get("cash", 0.0)),
-                    "used": float(equity.get("utilised", {}).get("debits", 0.0)),
-                    "collateral": float(equity.get("utilised", {}).get("liquid_collateral", 0.0)),
-                    "connected": margins_connected
-                },
-                "holdings": [
-                    {
-                        "tradingsymbol": h.get("tradingsymbol", ""),
-                        "exchange": h.get("exchange", ""),
-                        "quantity": int(h.get("quantity", 0)),
-                        "average_price": float(h.get("average_price", 0.0)),
-                        "last_price": float(h.get("last_price", 0.0)),
-                        "pnl": float(h.get("pnl", 0.0))
-                    }
-                    for h in holdings
-                ],
-                "positions": [
-                    {
-                        "tradingsymbol": p.get("tradingsymbol", ""),
-                        "exchange": p.get("exchange", ""),
-                        "quantity": int(p.get("quantity", 0)),
-                        "average_price": float(p.get("average_price", 0.0)),
-                        "last_price": float(p.get("last_price", 0.0)),
-                        "pnl": float(p.get("pnl", 0.0))
-                    }
-                    for p in net_positions
-                ]
-            }
-            
-        elif broker_name == "aliceblue":
-            alice_broker = engine_instance.broker_clients.get("ALICEBLUE")
-            if not alice_broker or not alice_broker.alice:
-                raise Exception("Alice Blue ANT client is not logged in. Check settings API keys.")
-                
-            profile = alice_broker.alice.get_profile_id()
-            balance = alice_broker.alice.get_balance()
-            holdings = alice_broker.alice.get_holding_position()
-            
-            cash = 0.0
-            if balance:
-                cash = float(balance[0].get('cash') if isinstance(balance, list) else balance.get('cash', 0.0))
-                
-            formatted_holdings = []
-            if holdings and isinstance(holdings, list):
-                for h in holdings:
-                    formatted_holdings.append({
-                        "tradingsymbol": h.get("TSYM", ""),
-                        "exchange": h.get("EXCH", ""),
-                        "quantity": int(h.get("QTY", 0)),
-                        "average_price": float(h.get("AVGPRC", 0.0)),
-                        "last_price": float(h.get("LTP", 0.0)),
-                        "pnl": float(h.get("PNL", 0.0))
-                    })
-                    
-            return {
-                "status": "SUCCESS",
-                "broker_name": "Alice Blue ANT API",
-                "profile": {
-                    "user_id": profile.get("account_id", "N/A") if isinstance(profile, dict) else str(profile),
-                    "user_name": "Alice Blue Account",
-                    "email": "N/A",
-                    "broker": "ALICEBLUE"
-                },
-                "margins": {
-                    "cash": cash,
-                    "available": cash,
-                    "used": 0.0,
-                    "collateral": 0.0,
-                    "connected": True if balance else False
-                },
-                "holdings": formatted_holdings
-            }
-            
+        return await fetch_unified_full_portfolio(active_cred, engine_instance)
     except Exception as e:
         logger.error(f"Error querying active broker full portfolio: {e}")
         return {"status": "ERROR", "message": f"Broker Connection Failed: {str(e)}"}
 
 @app.get("/api/broker/portfolio")
-def get_broker_portfolio(session: Session = Depends(get_session)):
+async def get_broker_portfolio(session: Session = Depends(get_session)):
     active_cred = session.exec(
         select(BrokerCredential).where(
             BrokerCredential.broker_name != "telegram",
@@ -1303,46 +1279,28 @@ def get_broker_portfolio(session: Session = Depends(get_session)):
         )
     ).first()
     
-    broker_name = active_cred.broker_name if active_cred else "kite"
-    
-    cash_balance = 0.0
-    used_margin = 0.0
-    collateral = 0.0
-    available_margin = 0.0
-    is_live = False
-    
-    if broker_name == "kite":
-        try:
-            kite_broker = engine_instance.broker_clients.get("KITE")
-            if kite_broker and kite_broker.kite_client:
-                margins = kite_broker.kite_client.margins()
-                equity = margins.get('equity', {})
-                cash_balance = float(equity.get('net', cash_balance))
-                available_margin = float(equity.get('available', {}).get('cash', available_margin))
-                used_margin = float(equity.get('utilised', {}).get('debits', used_margin))
-                is_live = True
-        except Exception as e:
-            logger.info(f"Skipping live margins fetch for Kite: {e}. Returning high fidelity demo metrics.")
-    elif broker_name == "aliceblue":
-        try:
-            if hasattr(engine_instance, 'alice') and engine_instance.alice:
-                balance = engine_instance.alice.get_balance()
-                if balance:
-                    cash_balance = float(balance[0].get('cash', cash_balance) if isinstance(balance, list) else balance.get('cash', cash_balance))
-                    available_margin = cash_balance
-                    used_margin = 0.0
-                    is_live = True
-        except Exception as e:
-            logger.info(f"Skipping live margins fetch for AliceBlue: {e}. Returning high fidelity demo metrics.")
-
-    return {
-        "broker_name": broker_name,
-        "is_live": is_live,
-        "cash_balance": cash_balance,
-        "used_margin": used_margin,
-        "collateral_margin": collateral,
-        "available_margin": available_margin
-    }
+    if not active_cred:
+        return {
+            "broker_name": "none",
+            "is_live": False,
+            "cash_balance": 0.0,
+            "used_margin": 0.0,
+            "collateral_margin": 0.0,
+            "available_margin": 0.0
+        }
+        
+    try:
+        return await fetch_unified_margins(active_cred, engine_instance)
+    except Exception as e:
+        logger.error(f"Error querying active broker margins: {e}")
+        return {
+            "broker_name": active_cred.broker_name,
+            "is_live": False,
+            "cash_balance": 0.0,
+            "used_margin": 0.0,
+            "collateral_margin": 0.0,
+            "available_margin": 0.0
+        }
 
 @app.post("/api/test-telegram")
 async def test_telegram_channel():
@@ -1369,17 +1327,26 @@ def reset_paper_trades(session: Session = Depends(get_session)):
 
 def get_market_data_provider(session: Session = Depends(get_session)) -> BaseMarketDataProvider:
     """Dependency injection provider that resolves the active stock market data source."""
-    cred = session.exec(select(BrokerCredential).where(
-        BrokerCredential.broker_name == "kite",
-        BrokerCredential.active == True
-    )).first()
+    active_cred = session.exec(
+        select(BrokerCredential).where(
+            BrokerCredential.broker_name != "telegram",
+            BrokerCredential.active == True
+        )
+    ).first()
     
-    if cred and cred.access_token:
-        logger.info("Injecting active KiteMarketDataProvider.")
-        return KiteMarketDataProvider(api_key=cred.api_key, access_token=cred.access_token)
-        
-    logger.info("Injecting SimulatedMarketDataProvider fallback.")
-    return SimulatedMarketDataProvider()
+    if active_cred:
+        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+        if token:
+            if active_cred.broker_name == "dhan":
+                from app.market_data import DhanMarketDataProvider
+                logger.info("Injecting active DhanMarketDataProvider.")
+                return DhanMarketDataProvider(client_id=active_cred.api_key, access_token=token)
+            elif active_cred.broker_name != "paper" and active_cred.broker_name != "shoonya":
+                from app.market_data import KiteMarketDataProvider
+                logger.info(f"Injecting active {active_cred.broker_name.capitalize()}MarketDataProvider.")
+                return KiteMarketDataProvider(api_key=active_cred.api_key, access_token=token)
+                
+    raise RuntimeError("No active live broker session found. Please login via Settings.")
 
 # Historical Data API for Charts using Dependency Injection
 @app.get("/api/historical-data")

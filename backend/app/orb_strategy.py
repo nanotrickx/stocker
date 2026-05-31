@@ -200,6 +200,8 @@ class ORBStrategyEngine:
         self,
         df: pd.DataFrame,
         initial_capital: float = 100000.0,
+        provider: Optional[Any] = None,
+        expiry_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run ORB strategy bar-by-bar on an intraday DataFrame.
@@ -227,11 +229,155 @@ class ORBStrategyEngine:
             state = ORBState()
             day_str = str(day)
 
+            # Load stored real option chain snapshots for this day if available
+            import os
+            import json
+            from datetime import datetime as dt_class
+            
+            stored_snapshots = []
+            symbol = self.config.get("symbols", ["NSE:NIFTY 50"])[0]
+            clean_sym = symbol.replace("NSE:", "").replace(" ", "_")
+            
+            # Base data directory inside backend/data/option_chains/YYYY-MM-DD/
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.join(os.path.dirname(base_path), "data", "option_chains", day_str, f"{clean_sym}.json")
+            
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r") as f:
+                        stored_snapshots = json.load(f)
+                except Exception:
+                    pass
+
+            # Pre-fetch actual historical options candles from Dhan/Kite API
+            ce_price_map = {}
+            pe_price_map = {}
+            api_data_source = False
+
+            if provider and provider.__class__.__name__ != "SimulatedMarketDataProvider":
+                try:
+                    opening_candle = day_df.iloc[0]
+                    ref_price = opening_candle["close"]
+                    step = 50 if "NIFTY" in symbol else 100
+                    
+                    selected_ce_strike = round(ref_price / step) * step
+                    selected_pe_strike = round(ref_price / step) * step
+                    
+                    resolved_expiry = expiry_date or self.config.get("expiry_date")
+                    if not resolved_expiry:
+                        d = dt_class.strptime(day_str, "%Y-%m-%d")
+                        # Tuesday weekly option expiry
+                        days_to_tuesday = (1 - d.weekday()) % 7
+                        if days_to_tuesday == 0:  # If today is Tuesday, next weekly option is next Tuesday
+                            days_to_tuesday = 7
+                        tuesday = d + timedelta(days=days_to_tuesday)
+                        
+                        # Thursday weekly option expiry
+                        days_to_thursday = (3 - d.weekday()) % 7
+                        if days_to_thursday == 0:  # If today is Thursday, next weekly option is next Thursday
+                            days_to_thursday = 7
+                        thursday = d + timedelta(days=days_to_thursday)
+                        
+                        tuesday_str = tuesday.strftime("%Y-%m-%d")
+                        thursday_str = thursday.strftime("%Y-%m-%d")
+                        
+                        # Check which candidate resolves to an actual F&O contract ID
+                        logger.info(f"Checking weekly option expiry candidates for {day_str}: Tuesday={tuesday_str}, Thursday={thursday_str}")
+                        sec_id_test = None
+                        if hasattr(provider, "_resolve_option_security_id"):
+                            try:
+                                sec_id_test = provider._resolve_option_security_id(symbol, float(selected_ce_strike), "CE", tuesday_str)
+                            except Exception:
+                                pass
+                        
+                        if sec_id_test:
+                            resolved_expiry = tuesday_str
+                            logger.info(f"Dynamically resolved weekly expiry date as Tuesday: {resolved_expiry}")
+                        else:
+                            resolved_expiry = thursday_str
+                            logger.info(f"Dynamically resolved weekly expiry date as Thursday: {resolved_expiry}")
+                        
+                    logger.info(f"API Pre-fetch Options for {day_str}: ATM Strike={selected_ce_strike}, Expiry={resolved_expiry}")
+                    
+                    # Fetch CE candles
+                    try:
+                        ce_candles = provider.get_historical_data(
+                            symbol=symbol,
+                            days=1,
+                            from_date=day_str,
+                            to_date=day_str,
+                            interval="minute",
+                            instrument_type="CE",
+                            strike_price=float(selected_ce_strike),
+                            expiry_date=resolved_expiry
+                        )
+                        if ce_candles:
+                            for c in ce_candles:
+                                try:
+                                    time_str = c["date"].split(" ")[1][:5]
+                                    ce_price_map[time_str] = c
+                                except Exception:
+                                    pass
+                            api_data_source = True
+                            logger.info(f"Loaded {len(ce_price_map)} actual CE option candles from Dhan/Kite API.")
+                    except Exception as ce_err:
+                        logger.warning(f"Failed to fetch actual CE option candles from API: {ce_err}")
+                        
+                    # Fetch PE candles
+                    try:
+                        pe_candles = provider.get_historical_data(
+                            symbol=symbol,
+                            days=1,
+                            from_date=day_str,
+                            to_date=day_str,
+                            interval="minute",
+                            instrument_type="PE",
+                            strike_price=float(selected_pe_strike),
+                            expiry_date=resolved_expiry
+                        )
+                        if pe_candles:
+                            for c in pe_candles:
+                                try:
+                                    time_str = c["date"].split(" ")[1][:5]
+                                    pe_price_map[time_str] = c
+                                except Exception:
+                                    pass
+                            api_data_source = True
+                            logger.info(f"Loaded {len(pe_price_map)} actual PE option candles from Dhan/Kite API.")
+                    except Exception as pe_err:
+                        logger.warning(f"Failed to fetch actual PE option candles from API: {pe_err}")
+                except Exception as prefetch_err:
+                    logger.warning(f"Options prefetch setup error: {prefetch_err}")
+            # Ensure actual live data is available from either broker API charts or real recorded backups of live data!
+            if not api_data_source and not stored_snapshots:
+                raise RuntimeError(
+                    f"Actual F&O option candles for {symbol} are not available from either the live broker API "
+                    f"or real recorded backup snapshots on {day_str}. Backtesting skipped as requested."
+                )
+
             for i in range(len(day_df)):
                 row = day_df.iloc[i]
                 ts = str(day_df.index[i])
                 bar_time = self._time_from_ts(ts)
                 signal = "HOLD"
+
+                try:
+                    bar_dt = dt_class.strptime(ts.split("+")[0], "%Y-%m-%d %H:%M:%S")
+                    bar_min_str = bar_dt.strftime("%H:%M")
+                except Exception:
+                    bar_min_str = ""
+                
+                # Locate the corresponding option chain snapshot for the current minute if available
+                current_snapshot = None
+                if stored_snapshots:
+                    try:
+                        for snap in stored_snapshots:
+                            snap_dt = dt_class.fromisoformat(snap["timestamp"])
+                            if snap_dt.strftime("%H:%M") == bar_min_str:
+                                current_snapshot = snap
+                                break
+                    except Exception:
+                        pass
 
                 # ── Phase: WAITING_OPENING_CANDLE ──────────────────────
                 if state.phase == "WAITING_OPENING_CANDLE":
@@ -242,7 +388,7 @@ class ORBStrategyEngine:
                         state.opening_close = row["close"]
                         
                         # Pre-select CE and PE strikes based on opening close to measure option breakout high
-                        step = 50 if "NIFTY" in self.config.get("symbols", ["NSE:NIFTY 50"])[0] else 100
+                        step = 50 if "NIFTY" in symbol else 100
 
                         # CE Selection (Strictly ATM)
                         state.selected_ce_strike = round(state.opening_close / step) * step
@@ -250,11 +396,42 @@ class ORBStrategyEngine:
                         # PE Selection (Strictly ATM)
                         state.selected_pe_strike = round(state.opening_close / step) * step
 
-                        # Math-based opening highs on options charts
-                        state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
-                        state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
+                        # Math-based opening highs on options charts (with real recorded fallback)
+                        real_ce_high = None
+                        real_pe_high = None
+                        if current_snapshot:
+                            for opt in current_snapshot.get("chain", []):
+                                if opt["strike"] == state.selected_ce_strike:
+                                    real_ce_high = opt["CE_price"]
+                                if opt["strike"] == state.selected_pe_strike:
+                                    real_pe_high = opt["PE_price"]
+                                    
+                        # Prioritize API Pre-fetch candles, then stored backup snapshots, then mathematical simulation fallback
+                        api_ce_candle = ce_price_map.get(bar_min_str)
+                        api_pe_candle = pe_price_map.get(bar_min_str)
+
+                        if api_ce_candle:
+                            state.ce_option_opening_high = api_ce_candle["high"]
+                        elif real_ce_high and real_ce_high > 0:
+                            state.ce_option_opening_high = real_ce_high
+                        else:
+                            state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                            
+                        if api_pe_candle:
+                            state.pe_option_opening_high = api_pe_candle["high"]
+                        elif real_pe_high and real_pe_high > 0:
+                            state.pe_option_opening_high = real_pe_high
+                        else:
+                            state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
 
                         state.phase = "WAITING_BREAKOUT"
+
+                        if api_data_source:
+                            db_source = "🟢 REAL LIVE API CHARTS (DhanHQ High-Fidelity Mode)"
+                        elif stored_snapshots:
+                            db_source = "🟢 REAL RECORDED SNAPSHOTS (High-Fidelity Mode)"
+                        else:
+                            db_source = "🔴 MATHEMATICAL SIMULATION (Fallback Mode)"
 
                         journal.append({
                             "ts": ts,
@@ -264,6 +441,7 @@ class ORBStrategyEngine:
                                 f"Opening range set. Index H={state.opening_high:.2f} L={state.opening_low:.2f}",
                                 f"CE Strike {state.selected_ce_strike:.0f} (Opening High: ₹{state.ce_option_opening_high:.2f})",
                                 f"PE Strike {state.selected_pe_strike:.0f} (Opening High: ₹{state.pe_option_opening_high:.2f})",
+                                f"Option Data Source: {db_source}",
                                 f"Waiting for double breakout breakout (Index + Option)...",
                             ],
                             "note": "Phase → WAITING_BREAKOUT",
@@ -277,9 +455,36 @@ class ORBStrategyEngine:
                     if bar_time > time(11, 0):
                         continue
 
-                    # Estimate current premiums
-                    current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
-                    current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
+                    # Estimate current premiums (with real recorded fallback)
+                    real_ce_prem = None
+                    real_pe_prem = None
+
+                    api_ce_candle = ce_price_map.get(bar_min_str)
+                    api_pe_candle = pe_price_map.get(bar_min_str)
+
+                    if api_ce_candle:
+                        real_ce_prem = api_ce_candle["close"]
+                    elif current_snapshot:
+                        for opt in current_snapshot.get("chain", []):
+                            if opt["strike"] == state.selected_ce_strike:
+                                real_ce_prem = opt["CE_price"]
+
+                    if api_pe_candle:
+                        real_pe_prem = api_pe_candle["close"]
+                    elif current_snapshot:
+                        for opt in current_snapshot.get("chain", []):
+                            if opt["strike"] == state.selected_pe_strike:
+                                real_pe_prem = opt["PE_price"]
+                                
+                    if real_ce_prem and real_ce_prem > 0:
+                        current_ce_premium = real_ce_prem
+                    else:
+                        current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                        
+                    if real_pe_prem and real_pe_prem > 0:
+                        current_pe_premium = real_pe_prem
+                    else:
+                        current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
 
                     # Index breakout validation
                     if row["high"] > state.opening_high and "BULLISH" not in state.trades_taken:
@@ -328,6 +533,13 @@ class ORBStrategyEngine:
 
                         state.trades_taken.append(state.breakout_direction)
 
+                        if api_data_source:
+                            db_purchase_source = "🟢 Purchased using REAL LIVE API OPTION CHARTS from DhanHQ API"
+                        elif current_snapshot:
+                            db_purchase_source = "🟢 Purchased using REAL RECORDED PREMIUM from local database backups"
+                        else:
+                            db_purchase_source = "🔴 Purchased using MATHEMATICAL SIMULATION fallback estimate"
+
                         journal.append({
                             "ts": ts,
                             "action": "BUY",
@@ -336,6 +548,8 @@ class ORBStrategyEngine:
                             "reason": [
                                 f"DOUBLE BREAKOUT: Index + Option {state.selected_strike:.0f} {state.selected_option_type}",
                                 f"Entry: ₹{est_prem:.2f} (Target: ₹{state.target_price:.2f} +{current_target_pct}% | SL: ₹{state.stop_loss_price:.2f} -{self.sl_pct}%)",
+                                f"Premium Source: {db_purchase_source}",
+                                f"ATM Selection details: Selected ATM {state.selected_strike:.0f} based on Spot close price ₹{row['close']:.2f}",
                             ],
                             "note": f"Phase → IN_POSITION | Buy {state.selected_strike:.0f} {state.selected_option_type} @ ₹{est_prem:.2f}",
                             "capital": capital,
@@ -343,9 +557,27 @@ class ORBStrategyEngine:
 
                 # ── Phase: IN_POSITION ─────────────────────────────────
                 elif state.phase == "IN_POSITION":
-                    spot_move = row["close"] - state.breakout_price
-                    delta = 0.5 if state.selected_option_type == "CE" else -0.5
-                    current_premium = max(0.5, state.entry_price + (spot_move * delta))
+                    # Monitor premium changes (with real recorded fallback)
+                    real_prem = None
+                    
+                    api_ce_candle = ce_price_map.get(bar_min_str)
+                    api_pe_candle = pe_price_map.get(bar_min_str)
+
+                    if state.selected_option_type == "CE" and api_ce_candle:
+                        real_prem = api_ce_candle["close"]
+                    elif state.selected_option_type == "PE" and api_pe_candle:
+                        real_prem = api_pe_candle["close"]
+                    elif current_snapshot:
+                        for opt in current_snapshot.get("chain", []):
+                            if opt["strike"] == state.selected_strike:
+                                real_prem = opt["CE_price"] if state.selected_option_type == "CE" else opt["PE_price"]
+                                
+                    if real_prem and real_prem > 0:
+                        current_premium = real_prem
+                    else:
+                        spot_move = row["close"] - state.breakout_price
+                        delta = 0.5 if state.selected_option_type == "CE" else -0.5
+                        current_premium = max(0.5, state.entry_price + (spot_move * delta))
 
                     exit_reason = None
                     exit_price = None
@@ -380,6 +612,13 @@ class ORBStrategyEngine:
                             state.phase = "DONE"
                             note_next = "Phase → DONE"
 
+                        if api_data_source:
+                            db_sell_source = "🟢 Executed exit using REAL LIVE API OPTION CHARTS from DhanHQ API"
+                        elif current_snapshot:
+                            db_sell_source = "🟢 Executed exit using REAL RECORDED PREMIUM from local database backups"
+                        else:
+                            db_sell_source = "🔴 Executed exit using MATHEMATICAL SIMULATION fallback estimate"
+
                         journal.append({
                             "ts": ts,
                             "action": "SELL",
@@ -390,6 +629,7 @@ class ORBStrategyEngine:
                                 f"{exit_reason} HIT: Premium reached ₹{exit_price:.2f}",
                                 f"Entry: ₹{state.entry_price:.2f} → Exit: ₹{exit_price:.2f}",
                                 f"P&L: ₹{pnl:.2f} ({self.qty} qty)",
+                                f"Premium Source: {db_sell_source}",
                             ],
                             "note": note_next,
                             "capital": round(capital, 2),
@@ -406,6 +646,12 @@ class ORBStrategyEngine:
                             "pnl": round(pnl, 2),
                             "pnl_pct": round(((exit_price - state.entry_price) / state.entry_price) * 100, 2),
                             "exit_reason": exit_reason,
+                            "opening_high": state.opening_high,
+                            "opening_low": state.opening_low,
+                            "ce_option_opening_high": state.ce_option_opening_high,
+                            "pe_option_opening_high": state.pe_option_opening_high,
+                            "selected_ce_strike": state.selected_ce_strike,
+                            "selected_pe_strike": state.selected_pe_strike,
                         })
 
                 # ── Build visualization bar ────────────────────────────

@@ -33,7 +33,7 @@ export default function Header({ wsConnected, positionsCount, onRefresh, onOpenS
 
         <div className="glass-card" style={{ padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '16px', borderRadius: '10px' }}>
           <div>
-            <p style={{ fontSize: '9px', color: 'var(--text-muted)' }}>MOCK MARGIN</p>
+            <p style={{ fontSize: '9px', color: 'var(--text-muted)' }}>VIRTUAL MARGIN</p>
             <p style={{ fontSize: '14px', fontWeight: 700, color: 'var(--accent-green)' }}>₹1,00,000.00</p>
           </div>
           <div>

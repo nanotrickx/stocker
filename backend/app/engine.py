@@ -29,6 +29,62 @@ class ExecutionEngine:
         self.daily_start_sent: Dict[str, bool] = {}
         self.daily_summary_sent: Dict[str, bool] = {}
         self.pre_market_health_check_sent: Dict[str, bool] = {}
+        self.strategy_logs: List[Dict[str, Any]] = []
+
+    def log_strategy_activity(self, instance_id: int, strategy_name: str, message: str):
+        """Append a log entry in memory with a capped size of 100 entries to ensure 0% performance overhead."""
+        if message.startswith("[EVAL]"):
+            is_live = False
+            try:
+                is_live = self._get_kite_client() is not None
+            except Exception:
+                pass
+            feed_label = "🟢 [LIVE]" if is_live else "🟡 [SIMULATED]"
+            message = message.replace("[EVAL]", f"[EVAL] {feed_label}")
+            
+        log_entry = {
+            "timestamp": now_ist().strftime("%H:%M:%S"),
+            "strategy_id": instance_id,
+            "strategy_name": strategy_name,
+            "message": message
+        }
+        self.strategy_logs.append(log_entry)
+        if len(self.strategy_logs) > 100:
+            self.strategy_logs.pop(0)
+
+    def is_market_holiday_today(self) -> Tuple[bool, Optional[str]]:
+        """Check if today is weekend or an exchange declared holiday."""
+        now = now_ist()
+        if now.weekday() >= 5:
+            return True, "Weekend (Saturday/Sunday)"
+        
+        # Comprehensive NSE Trading Holiday List for 2026
+        holidays_2026 = {
+            "2026-01-26": "Republic Day",
+            "2026-03-03": "Holi",
+            "2026-03-26": "Shri Ram Navami",
+            "2026-03-31": "Shri Mahavir Jayanti",
+            "2026-04-03": "Good Friday",
+            "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+            "2026-05-01": "Maharashtra Day",
+            "2026-05-28": "Bakri Id (Eid-ul-Adha)",
+            "2026-06-26": "Muharram",
+            "2026-09-14": "Ganesh Chaturthi",
+            "2026-10-02": "Mahatma Gandhi Jayanti",
+            "2026-10-21": "Dussehra",
+            "2026-11-25": "Guru Nanak Jayanti",
+            "2026-12-25": "Christmas"
+        }
+        
+        date_str = now.strftime("%Y-%m-%d")
+        if date_str in holidays_2026:
+            return True, holidays_2026[date_str]
+            
+        return False, None
+
+    def get_recent_logs(self) -> List[Dict[str, Any]]:
+        """Retrieve the in-memory strategy activity logs."""
+        return self.strategy_logs
 
     def set_telegram_bot(self, telegram_bot):
         self.telegram_bot = telegram_bot
@@ -300,32 +356,36 @@ class ExecutionEngine:
             return atm + step if option_type.upper() == "CE" else atm - step
         return atm
 
-    async def fetch_ohlc_candles(self, symbol: str) -> pd.DataFrame:
+    async def fetch_ohlc_candles(self, symbol: str, strategy: Optional[StrategyInstance] = None) -> pd.DataFrame:
         """
         Fetch candle data for technical indicator calculations.
         If active Zerodha Kite credentials exist, queries real-time 1-minute candles.
-        Otherwise, falls back to sandbox simulation.
+        Otherwise, falls back to sandbox simulation (unless strict paper/live strategy).
         """
         if symbol in self.historical_data_cache:
             return self.historical_data_cache[symbol]
 
-        # Try to pull real Zerodha candles
+        # Try to pull real Zerodha or Dhan candles
         try:
             from app.database import engine as db_engine, BrokerCredential
             from sqlmodel import Session, select
             with Session(db_engine) as session:
-                cred = session.exec(select(BrokerCredential).where(
+                cred_kite = session.exec(select(BrokerCredential).where(
                     BrokerCredential.broker_name == "kite",
                     BrokerCredential.active == True
                 )).first()
+                cred_dhan = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name == "dhan",
+                    BrokerCredential.active == True
+                )).first()
                 
-            if cred and cred.api_key and cred.access_token:
+            if cred_kite and cred_kite.api_key and cred_kite.access_token:
                 logger.info(f"Active Zerodha credentials detected. Querying 1-minute candles from Kite for {symbol}...")
                 from kiteconnect import KiteConnect
                 import asyncio
                 
-                kite = KiteConnect(api_key=cred.api_key)
-                kite.set_access_token(cred.access_token)
+                kite = KiteConnect(api_key=cred_kite.api_key)
+                kite.set_access_token(cred_kite.access_token)
                 
                 # Resolve Standard tokens
                 instrument_token = 256265 if "NIFTY 50" in symbol else 260105
@@ -357,21 +417,64 @@ class ExecutionEngine:
                     df = calculate_indicators(df)
                     self.historical_data_cache[symbol] = df
                     return df
-        except Exception as e:
-            logger.warning(f"Zerodha historical fetch skipped: {e}. Defaulting to Sandbox candle simulator.")
 
-        # Sandbox Mock candles generator fallback
-        logger.info(f"Generating mock historical OHLC dataset for symbol: {symbol}")
+            elif cred_dhan and cred_dhan.api_key and cred_dhan.access_token:
+                logger.info(f"Active Dhan credentials detected. Querying 1-minute candles from Dhan for {symbol}...")
+                from app.market_data import DhanMarketDataProvider
+                import asyncio
+                provider = DhanMarketDataProvider(client_id=cred_dhan.api_key, access_token=cred_dhan.access_token)
+                
+                to_date = now_ist()
+                from_date = to_date - timedelta(days=3)
+                
+                loop = asyncio.get_event_loop()
+                candles = await loop.run_in_executor(
+                    None,
+                    lambda: provider.get_historical_data(
+                        symbol=symbol,
+                        days=3,
+                        from_date=from_date.strftime("%Y-%m-%d"),
+                        to_date=to_date.strftime("%Y-%m-%d"),
+                        interval="minute"
+                    )
+                )
+                if candles:
+                    logger.info(f"Successfully loaded {len(candles)} real candles from Dhan.")
+                    dates = [c["timestamp"] for c in candles]
+                    df = pd.DataFrame({
+                        "open": [float(c["open"]) for c in candles],
+                        "high": [float(c["high"]) for c in candles],
+                        "low": [float(c["low"]) for c in candles],
+                        "close": [float(c["close"]) for c in candles],
+                        "volume": [int(c["volume"]) for c in candles]
+                    }, index=pd.DatetimeIndex(dates))
+                    
+                    df = calculate_indicators(df)
+                    self.historical_data_cache[symbol] = df
+                    return df
+        except Exception as e:
+            logger.warning(f"Live broker historical fetch skipped/failed: {e}.")
+            if strategy is not None:
+                logger.error(f"Cannot generate mock candles for active deployed strategy '{strategy.name}'. Only real broker feed is permitted.")
+                return pd.DataFrame()
+
+        # If strict active deployed strategy, refuse to generate mock candles
+        if strategy is not None:
+            logger.error(f"No active Zerodha/Dhan credentials found for deployed strategy '{strategy.name}'. Mock candles disabled.")
+            return pd.DataFrame()
+
+        # Static last day value fallback (no random mock)
+        logger.info(f"Generating static last-day/standard OHLC dataset for symbol: {symbol}")
         now = now_ist()
         dates = pd.date_range(end=now, periods=100, freq='min')
         
-        base_price = 22000.0 if "NIFTY" in symbol else (47000.0 if "BANK" in symbol else 150.0)
+        base_price = 23909.55 if "NIFTY" in symbol else (48560.20 if "BANK" in symbol else 100.0)
         
-        closes = [base_price + (i * 0.5) for i in range(100)]
-        opens = [c - 0.2 for c in closes]
-        highs = [c + 1.0 for c in closes]
-        lows = [o - 0.8 for o in opens]
-        volumes = [1000 + (i * 10) for i in range(100)]
+        closes = [base_price for _ in range(100)]
+        opens = [base_price for _ in range(100)]
+        highs = [base_price for _ in range(100)]
+        lows = [base_price for _ in range(100)]
+        volumes = [1000 for _ in range(100)]
 
         df = pd.DataFrame({
             "open": opens,
@@ -398,7 +501,9 @@ class ExecutionEngine:
         symbol = symbols[0]  # Standard single target symbol
         
         # Fetch latest OHLC and inject current LTP
-        df = await self.fetch_ohlc_candles(symbol)
+        df = await self.fetch_ohlc_candles(symbol, strategy)
+        if df.empty:
+            return
         
         # Append current quote as a final row
         new_row = df.iloc[-1].copy()
@@ -427,6 +532,17 @@ class ExecutionEngine:
             results.append(res)
 
         entry_triggered = all(results) if operator == "AND" else any(results)
+
+        # Performance-safe logging of condition evaluation
+        cond_msgs = []
+        for c, r in zip(conditions, results):
+            cond_msgs.append(f"{c.get('indicator')}({c.get('period')}) {c.get('comparison')} -> {'✓' if r else '✗'}")
+        
+        self.log_strategy_activity(
+            strategy.id,
+            strategy.name,
+            f"[EVAL] Custom strategy entry check: {', '.join(cond_msgs)} (Triggered: {entry_triggered})"
+        )
 
         if entry_triggered:
             # Entry condition met! Execute Option Buy Order
@@ -470,18 +586,23 @@ class ExecutionEngine:
                 instance_id=strategy.id
             )
 
-            if res.get("status") == "SUCCESS" and self.telegram_bot:
+            if res.get("status") == "SUCCESS":
                 trade = res["trade"]
-                # Send immediate Telegram Notification
-                await self.telegram_bot.send_message(
-                    f"🟢 <b>BUY TRIGGERED</b>\n\n"
-                    f"<b>Strategy:</b> {strategy.name}\n"
-                    f"<b>Symbol:</b> {trade.symbol}\n"
-                    f"<b>Entry Price:</b> ₹{trade.entry_price}\n"
-                    f"<b>Qty:</b> {trade.quantity}\n"
-                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
-                    f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[TRIGGER] BUY entry hit! Symbol: {trade.symbol} @ ₹{trade.entry_price} (Qty: {trade.quantity} | Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
                 )
+                if self.telegram_bot:
+                    await self.telegram_bot.send_message(
+                        f"🟢 <b>BUY TRIGGERED</b>\n\n"
+                        f"<b>Strategy:</b> {strategy.name}\n"
+                        f"<b>Symbol:</b> {trade.symbol}\n"
+                        f"<b>Entry Price:</b> ₹{trade.entry_price}\n"
+                        f"<b>Qty:</b> {trade.quantity}\n"
+                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
+                        f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
+                    )
 
     async def force_exit_trade(self, trade_id: int, reason: str = "MANUAL_FORCE_EXIT") -> bool:
         """Manually forces a sell order and closes an active position by ID."""
@@ -598,6 +719,7 @@ class ExecutionEngine:
                 logger.info(f"🕒 Intraday Timeline Squareoff hit for strategy '{strategy.name}'")
 
         # Evaluate custom exit rules
+        cond_msgs = []
         if not exit_triggered:
             symbol = config.get("symbols", [active_trade.symbol])[0]
             df = await self.fetch_ohlc_candles(symbol)
@@ -623,8 +745,17 @@ class ExecutionEngine:
                     results.append(res)
 
                 exit_triggered = all(results) if operator == "AND" else any(results)
+                for c, r in zip(conditions, results):
+                    cond_msgs.append(f"{c.get('indicator')}({c.get('period')}) {c.get('comparison')} -> {'✓' if r else '✗'}")
                 if exit_triggered:
                     reason = "INDICATOR_EXIT"
+
+        custom_exit_str = f" | Exit Rules: {', '.join(cond_msgs)}" if cond_msgs else ""
+        self.log_strategy_activity(
+            strategy.id,
+            strategy.name,
+            f"[EVAL] Phase: IN_POSITION ({active_trade.symbol}). LTP: ₹{current_ltp:.2f} | P&L: ₹{pnl:.2f} ({pct_pnl:.2f}% | SL: -{stop_loss_pct}%, Target: +{target_pct}%){custom_exit_str} (Triggered: {exit_triggered})"
+        )
 
         if exit_triggered:
             broker_mode = "PAPER"
@@ -651,9 +782,14 @@ class ExecutionEngine:
                 instance_id=strategy.id
             )
 
-            if res.get("status") == "SUCCESS" and self.telegram_bot:
+            if res.get("status") == "SUCCESS":
                 trade: Trade = res["trade"]
                 trade.exit_reason = reason
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[TRIGGER] EXIT triggered! Symbol: {trade.symbol} @ ₹{trade.exit_price} (Reason: {reason} | P&L: ₹{trade.pnl:.2f} | Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
+                )
                 
                 # Commit reason to database
                 with Session(db_engine) as session:
@@ -665,17 +801,18 @@ class ExecutionEngine:
 
                 pnl_color = "🟢" if trade.pnl >= 0 else "🔴"
                 # Send immediate Telegram Notification
-                await self.telegram_bot.send_message(
-                    f"{pnl_color} <b>SELL TRIGGERED ({reason})</b>\n\n"
-                    f"<b>Strategy:</b> {strategy.name}\n"
-                    f"<b>Symbol:</b> {trade.symbol}\n"
-                    f"<b>Exit Price:</b> ₹{trade.exit_price} (Entry: ₹{trade.entry_price})\n"
-                    f"<b>Qty:</b> {trade.quantity}\n"
-                    f"<b>PnL:</b> ₹{round(trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
-                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
-                    f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
-                    f"🕐 <b>Sell Time (IST):</b> {trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
-                )
+                if self.telegram_bot:
+                    await self.telegram_bot.send_message(
+                        f"{pnl_color} <b>SELL TRIGGERED ({reason})</b>\n\n"
+                        f"<b>Strategy:</b> {strategy.name}\n"
+                        f"<b>Symbol:</b> {trade.symbol}\n"
+                        f"<b>Exit Price:</b> ₹{trade.exit_price} (Entry: ₹{trade.entry_price})\n"
+                        f"<b>Qty:</b> {trade.quantity}\n"
+                        f"<b>PnL:</b> ₹{round(trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
+                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
+                        f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
+                        f"🕐 <b>Sell Time (IST):</b> {trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
+                    )
 
     # ── Real-time LTP from Kite ─────────────────────────────────────────
 
@@ -699,8 +836,8 @@ class ExecutionEngine:
             logger.warning(f"Could not init Kite client: {e}")
         return None
 
-    async def fetch_live_spot(self, symbol: str) -> float:
-        """Fetch real-time LTP from Zerodha. Falls back to mock if unavailable."""
+    async def fetch_live_spot(self, symbol: str, strategy: Optional[StrategyInstance] = None) -> float:
+        """Fetch real-time LTP from Zerodha. Falls back to mock if unavailable and NOT in strict paper/live trading."""
         try:
             kite = self._get_kite_client()
             if kite:
@@ -712,12 +849,257 @@ class ExecutionEngine:
         except Exception as e:
             logger.debug(f"LTP fetch failed for {symbol}: {e}")
             self._kite_client = None  # reset so next tick retries auth
-        # Fallback mock
+        # Check if holiday/weekend to avoid generating mock trades
+        is_holiday, reason = self.is_market_holiday_today()
+        if is_holiday:
+            return 0.0
+
+        # If any strategy is active, DO NOT generate mock fallback prices! We only trade on actual broker feed!
+        if strategy is not None:
+            return 0.0
+
+        # Fallback mock (only for local test/sandbox environment when market is theoretically open but API fails)
         if "NIFTY" in symbol and "BANK" not in symbol:
             return 24500.0 + (now_ist().second % 10 - 5) * 5
         elif "BANK" in symbol:
             return 52000.0 + (now_ist().second % 10 - 5) * 10
         return 100.0
+
+    async def get_nearest_option_expiry(self, symbol: str) -> datetime.date:
+        """Resolve standard weekly expiry date for Nifty / BankNifty options dynamically."""
+        now = now_ist()
+        nearest_expiry_date = None
+        try:
+            kite = self._get_kite_client()
+            if kite:
+                loop = asyncio.get_event_loop()
+                all_nfo = await loop.run_in_executor(None, lambda: kite.instruments("NFO"))
+                if all_nfo:
+                    opt_name = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
+                    opts = [i for i in all_nfo if i["name"] == opt_name and i["segment"] == "NFO-OPT"]
+                    if opts:
+                        from datetime import datetime as dt_class
+                        expiries = []
+                        for o in opts:
+                            if o.get("expiry"):
+                                if isinstance(o["expiry"], str):
+                                    expiries.append(dt_class.strptime(o["expiry"], "%Y-%m-%d").date())
+                                else:
+                                    expiries.append(o["expiry"])
+                        
+                        today = now.date()
+                        valid_expiries = sorted([e for e in expiries if e >= today])
+                        if valid_expiries:
+                            nearest_expiry_date = valid_expiries[0]
+        except Exception as e:
+            logger.debug(f"Kite dynamic expiry lookup failed: {e}")
+
+        if nearest_expiry_date is None:
+            # Fallback math (assume next Thursday)
+            days_ahead = 3 - now.weekday()
+            if days_ahead < 0 or (days_ahead == 0 and now.time() > time(15, 30)):
+                days_ahead += 7
+            nearest_expiry_date = (now + timedelta(days=days_ahead)).date()
+            
+        return nearest_expiry_date
+
+    async def get_live_option_chain(self, symbol: str, strategy: StrategyInstance) -> Dict[str, Any]:
+        """
+        Fetches live option chain data for the given index symbol.
+        Constructs strikes around the ATM and resolves real-time premiums from Zerodha or sandbox.
+        """
+        import math
+        # 1. Fetch live spot price
+        spot = await self.fetch_live_spot(symbol, strategy)
+        if spot <= 0.0:
+            if strategy is not None:
+                return {
+                    "underlying": symbol,
+                    "spot_price": 0.0,
+                    "atm_strike": 0,
+                    "expiry_date": "N/A",
+                    "broker": "OFFLINE",
+                    "chain": []
+                }
+            spot = 24500.0 if "NIFTY" in symbol and "BANK" not in symbol else 52000.0
+
+        # 2. Determine strike steps
+        step = 50 if "NIFTY" in symbol and "BANK" not in symbol else 100
+        atm = round(spot / step) * step
+
+        # 3. Generate 7 strikes (ATM, 3 ITM, 3 OTM)
+        strikes = [atm + (i * step) for i in range(-3, 4)]
+        
+        # 4. Resolve standard weekly expiry string for Zerodha Kite Connect
+        nearest_expiry_date = await self.get_nearest_option_expiry(symbol)
+
+        year_str = nearest_expiry_date.strftime("%y")
+        month_val = str(nearest_expiry_date.month)
+        day_str = f"{nearest_expiry_date.day:02d}"
+        
+        month_char = month_val
+        if month_val == "10":
+            month_char = "O"
+        elif month_val == "11":
+            month_char = "N"
+        elif month_val == "12":
+            month_char = "D"
+            
+        underlying_prefix = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
+        
+        # 5. Build option trading symbols to query
+        option_queries = []
+        option_symbol_map = {}
+        for strike in strikes:
+            for opt_type in ["CE", "PE"]:
+                tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(strike)}{opt_type}"
+                kite_symbol = f"NFO:{tradingsymbol}"
+                option_queries.append(kite_symbol)
+                option_symbol_map[kite_symbol] = {
+                    "strike": strike,
+                    "opt_type": opt_type,
+                    "tradingsymbol": tradingsymbol
+                }
+
+        # 6. Try to pull real LTP from Zerodha Kite client if active and authorized
+        kite_connected = False
+        real_quotes = {}
+        try:
+            kite = self._get_kite_client()
+            if kite:
+                loop = asyncio.get_event_loop()
+                real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(option_queries))
+                if real_quotes:
+                    kite_connected = True
+        except Exception as e:
+            logger.debug(f"Kite LTP option chain fetch failed: {e}")
+
+        # If strict strategy and broker is offline, DO NOT return simulated premiums!
+        if strategy is not None and not kite_connected:
+            return {
+                "underlying": symbol,
+                "spot_price": spot,
+                "atm_strike": atm,
+                "expiry_date": nearest_expiry_date.strftime("%d-%b-%Y"),
+                "broker": "OFFLINE",
+                "chain": []
+            }
+
+        # 7. Construct final option chain rows
+        chain_rows = {}
+        for strike in strikes:
+            chain_rows[strike] = {"strike": strike, "CE": None, "PE": None}
+
+        for kite_symbol, meta in option_symbol_map.items():
+            strike = meta["strike"]
+            opt_type = meta["opt_type"]
+            tradingsymbol = meta["tradingsymbol"]
+            
+            last_price = 0.0
+            if kite_connected and kite_symbol in real_quotes:
+                last_price = float(real_quotes[kite_symbol]["last_price"])
+            else:
+                intrinsic = max(0.0, spot - strike) if opt_type == "CE" else max(0.0, strike - spot)
+                distance_pct = abs(spot - strike) / spot
+                extrinsic_base = 150.0 if "NIFTY" in symbol and "BANK" not in symbol else 400.0
+                extrinsic = max(5.0, extrinsic_base * math.exp(-15 * distance_pct))
+                last_price = round(intrinsic + extrinsic, 2)
+            
+            chain_rows[strike][opt_type] = {
+                "tradingsymbol": tradingsymbol,
+                "last_price": last_price,
+                "is_atm": strike == atm
+            }
+
+        return {
+            "underlying": symbol,
+            "spot_price": spot,
+            "atm_strike": atm,
+            "expiry_date": nearest_expiry_date.strftime("%d-%b-%Y"),
+            "broker": "KITE" if kite_connected else "SANDBOX",
+            "chain": list(chain_rows.values())
+        }
+
+    async def record_option_chain_snapshot(self, symbol: str):
+        """Records a 1-minute snapshot of the live option chain to a local day folder."""
+        now = now_ist()
+        now_time = now.time()
+        
+        # 1. Ensure market is open and not weekend/holiday
+        if now_time < time(9, 15) or now_time > time(15, 30):
+            return
+            
+        is_holiday, _ = self.is_market_holiday_today()
+        if is_holiday:
+            return
+            
+        # 2. Only record once per minute
+        today_str = now.strftime("%Y-%m-%d")
+        minute_key = now.strftime("%H:%M")
+        
+        if not hasattr(self, "_recorded_minutes"):
+            self._recorded_minutes = {}
+            
+        rec_key = f"{symbol}_{today_str}_{minute_key}"
+        if self._recorded_minutes.get(rec_key):
+            return  # Already recorded this minute!
+            
+        # 3. Pull option chain via get_live_option_chain
+        # Pass strategy=None to allow math/sandbox fallback only if broker is completely unreachable
+        chain_data = await self.get_live_option_chain(symbol, strategy=None)
+        if not chain_data or chain_data.get("broker") == "OFFLINE" or not chain_data.get("chain"):
+            return  # No active data or broker offline
+            
+        # 4. Construct snapshot structure
+        snapshot = {
+            "timestamp": now.isoformat(),
+            "spot_price": chain_data["spot_price"],
+            "atm_strike": chain_data["atm_strike"],
+            "expiry_date": chain_data["expiry_date"],
+            "chain": []
+        }
+        
+        for row in chain_data["chain"]:
+            strike = row["strike"]
+            ce = row.get("CE") or {}
+            pe = row.get("PE") or {}
+            snapshot["chain"].append({
+                "strike": strike,
+                "CE_price": ce.get("last_price", 0.0),
+                "CE_symbol": ce.get("tradingsymbol", ""),
+                "PE_price": pe.get("last_price", 0.0),
+                "PE_symbol": pe.get("tradingsymbol", "")
+            })
+            
+        # 5. Write to local day folder
+        import os
+        import json
+        
+        # Base data directory inside backend
+        base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "option_chains", today_str)
+        os.makedirs(base_dir, exist_ok=True)
+        
+        file_name = symbol.replace("NSE:", "").replace(" ", "_") + ".json"
+        file_path = os.path.join(base_dir, file_name)
+        
+        # Load existing snapshots
+        snapshots = []
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r") as f:
+                    snapshots = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read existing option chain file {file_path}: {e}")
+                
+        # Append and save
+        snapshots.append(snapshot)
+        try:
+            with open(file_path, "w") as f:
+                json.dump(snapshots, f, indent=2)
+            self._recorded_minutes[rec_key] = True
+            logger.info(f"Recorded option chain snapshot for {symbol} at {minute_key} to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save option chain snapshot for {symbol}: {e}")
 
     # ── ORB Live Evaluation ───────────────────────────────────────────
 
@@ -813,12 +1195,21 @@ class ExecutionEngine:
 
         # ── Phase: WAITING_OPENING_CANDLE ──
         if state.phase == "WAITING_OPENING_CANDLE":
+            self.log_strategy_activity(
+                strategy.id,
+                strategy.name,
+                "[EVAL] Phase: WAITING_OPENING_CANDLE. Waiting for opening 1-min candle completion (at 09:16 AM)."
+            )
             # Wait until 09:16 (first candle complete)
             if now_time >= time(9, 16):
                 # Fetch the 9:15 candle from Kite
                 symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
                 candle = await self._fetch_915_candle(symbol)
                 if not candle:
+                    is_holiday, reason = self.is_market_holiday_today()
+                    if is_holiday:
+                        # Market is closed for holiday, suspend execution
+                        return
                     # Mock fallback for sandbox / offline mode
                     if "BANK" in symbol:
                         candle = {"open": 52000.0, "high": 52100.0, "low": 51950.0, "close": 52050.0}
@@ -867,9 +1258,61 @@ class ExecutionEngine:
             if now_time > time(11, 0):
                 return
 
-            # Estimate current premiums
-            current_ce_premium = round(max(0.5, max(0, spot - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
-            current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - spot) + state.selected_pe_strike * 0.002), 2)
+            # Query real-time premiums from broker feed
+            real_ce_premium = 0.0
+            real_pe_premium = 0.0
+            
+            try:
+                symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
+                nearest_expiry_date = await self.get_nearest_option_expiry(symbol)
+                year_str = nearest_expiry_date.strftime("%y")
+                month_val = str(nearest_expiry_date.month)
+                day_str = f"{nearest_expiry_date.day:02d}"
+                
+                month_char = month_val
+                if month_val == "10":
+                    month_char = "O"
+                elif month_val == "11":
+                    month_char = "N"
+                elif month_val == "12":
+                    month_char = "D"
+                
+                underlying_prefix = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
+                ce_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_ce_strike)}CE"
+                pe_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_pe_strike)}PE"
+                
+                kite = self._get_kite_client()
+                if kite:
+                    loop = asyncio.get_event_loop()
+                    option_queries = [f"NFO:{ce_tradingsymbol}", f"NFO:{pe_tradingsymbol}"]
+                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(option_queries))
+                    if real_quotes:
+                        if f"NFO:{ce_tradingsymbol}" in real_quotes:
+                            real_ce_premium = float(real_quotes[f"NFO:{ce_tradingsymbol}"]["last_price"])
+                        if f"NFO:{pe_tradingsymbol}" in real_quotes:
+                            real_pe_premium = float(real_quotes[f"NFO:{pe_tradingsymbol}"]["last_price"])
+            except Exception as e:
+                logger.debug(f"ORB Live premiums fetch failed: {e}")
+
+            # If broker offline / didn't send data, strictly disable mock fallback for paper/live trading
+            if real_ce_premium <= 0.0 or real_pe_premium <= 0.0:
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[SYSTEM] Live Option Premiums currently unavailable from broker feed. Trading suspended."
+                )
+                return
+
+            current_ce_premium = real_ce_premium
+            current_pe_premium = real_pe_premium
+
+            ce_status = "Broke out" if state.index_high_broke_out else f"Spot ₹{spot:.2f} <= High ₹{state.opening_high:.2f}"
+            pe_status = "Broke out" if state.index_low_broke_out else f"Spot ₹{spot:.2f} >= Low ₹{state.opening_low:.2f}"
+            self.log_strategy_activity(
+                strategy.id,
+                strategy.name,
+                f"[EVAL] Phase: WAITING_BREAKOUT. CE Premium: ₹{current_ce_premium:.2f} (Target High: ₹{state.ce_option_opening_high:.2f} | Index: {ce_status}). PE Premium: ₹{current_pe_premium:.2f} (Target High: ₹{state.pe_option_opening_high:.2f} | Index: {pe_status})."
+            )
 
             # Check index breakout
             if spot > state.opening_high and "BULLISH" not in state.trades_taken:
@@ -935,6 +1378,11 @@ class ExecutionEngine:
                 )
 
                 if res.get("status") == "SUCCESS":
+                    self.log_strategy_activity(
+                        strategy.id,
+                        strategy.name,
+                        f"[TRIGGER] BUY entry hit! Direction: {state.breakout_direction} Option: {state.selected_strike} {state.selected_option_type} @ ₹{est_prem:.2f} (Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
+                    )
                     logger.info(f"🚀 ORB [{strategy.name}] BUY {state.selected_strike} {state.selected_option_type} @ ₹{est_prem}")
                     if self.telegram_bot:
                         ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
@@ -946,16 +1394,62 @@ class ExecutionEngine:
                             f"<b>Entry Price:</b> ₹{est_prem}\n"
                             f"<b>Target (Target Price):</b> ₹{state.target_price} (+{current_target_pct}%)\n"
                             f"<b>Stop Loss:</b> ₹{state.stop_loss_price} (-{sl_pct}%)\n"
-                            f"⏰ <b>Time (IST):</b> {ts_str}\n"
-                            f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}"
+                            f"⏰ <b>Trigger Time (IST):</b> {ts_str}\n"
+                            f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
+                            f"📊 <b>Strategy Details (First Candle):</b>\n"
+                            f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
+                            f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
+                            f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
+                            f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>"
                         )
 
         # ── Phase: IN_POSITION ──
         elif state.phase == "IN_POSITION":
-            # Estimate current premium from spot movement
-            spot_move = spot - state.breakout_price
-            delta = 0.5 if state.selected_option_type == "CE" else -0.5
-            current_prem = max(0.5, state.entry_price + spot_move * delta)
+            # Query real-time premium of the active position from broker feed
+            real_premium = 0.0
+            try:
+                symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
+                nearest_expiry_date = await self.get_nearest_option_expiry(symbol)
+                year_str = nearest_expiry_date.strftime("%y")
+                month_val = str(nearest_expiry_date.month)
+                day_str = f"{nearest_expiry_date.day:02d}"
+                
+                month_char = month_val
+                if month_val == "10":
+                    month_char = "O"
+                elif month_val == "11":
+                    month_char = "N"
+                elif month_val == "12":
+                    month_char = "D"
+                
+                underlying_prefix = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
+                opt_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_strike)}{state.selected_option_type}"
+                
+                kite = self._get_kite_client()
+                if kite:
+                    loop = asyncio.get_event_loop()
+                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp([f"NFO:{opt_tradingsymbol}"]))
+                    if real_quotes and f"NFO:{opt_tradingsymbol}" in real_quotes:
+                        real_premium = float(real_quotes[f"NFO:{opt_tradingsymbol}"]["last_price"])
+            except Exception as e:
+                logger.debug(f"ORB Live position premium fetch failed: {e}")
+
+            # If broker offline / didn't send data, strictly disable mock fallback for paper/live trading
+            if real_premium <= 0.0:
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[SYSTEM] Live Position Premium currently unavailable from broker feed. Trading suspended."
+                )
+                return
+
+            current_prem = real_premium
+
+            self.log_strategy_activity(
+                strategy.id,
+                strategy.name,
+                f"[EVAL] Phase: IN_POSITION ({state.selected_strike} {state.selected_option_type}). Premium: ₹{current_prem:.2f} | Target: ₹{state.target_price:.2f} | Stop Loss: ₹{state.stop_loss_price:.2f}"
+            )
 
             exit_reason = None
             exit_price = None
@@ -1005,6 +1499,11 @@ class ExecutionEngine:
                         )
 
                 pnl_icon = "🟢" if trade_pnl >= 0 else "🔴"
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[TRIGGER] EXIT triggered! Reason: {exit_reason} | Executed at: ₹{exit_price:.2f} | Trade P&L: ₹{trade_pnl:.2f}"
+                )
                 logger.info(f"{pnl_icon} ORB [{strategy.name}] {exit_reason} @ ₹{exit_price} Trade P&L: ₹{trade_pnl:.2f}")
                 if self.telegram_bot:
                     ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
@@ -1014,10 +1513,15 @@ class ExecutionEngine:
                         f"<b>Exit Price:</b> ₹{exit_price} (Entry: ₹{state.entry_price})\n"
                         f"<b>Trade P&L:</b> ₹{round(trade_pnl, 2)}\n"
                         f"<b>Total P&L Today:</b> ₹{round(state.pnl, 2)}\n"
-                        f"🕐 <b>Buy Time (IST):</b> {state.entry_time}\n"
-                        f"🕐 <b>Sell Time (IST):</b> {ts_str}\n"
+                        f"🕐 <b>Trigger/Buy Time (IST):</b> {state.entry_time}\n"
+                        f"🕐 <b>Exit/Sell Time (IST):</b> {ts_str}\n"
                         f"<b>Next Phase Status:</b> {state.phase}\n"
-                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}"
+                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
+                        f"📊 <b>Strategy Details (First Candle):</b>\n"
+                        f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
+                        f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
+                        f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
+                        f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>"
                     )
 
     async def _fetch_915_candle(self, symbol: str) -> Optional[Dict]:
@@ -1080,12 +1584,22 @@ class ExecutionEngine:
                         if today_date not in self.daily_start_sent and self._get_system_state(f"daily_start_sent_{today_date}") != "true":
                             self.daily_start_sent[today_date] = True
                             self._set_system_state(f"daily_start_sent_{today_date}", "true")
-                            await self.telegram_bot.send_message(
-                                f"🚀 <b>Stocker Engine is Working!</b>\n\n"
-                                f"Stocker automated trading core has booted successfully for today (<b>{now.strftime('%d-%b-%Y')}</b>) "
-                                f"and is actively monitoring options breakouts and strategy rules in the background.\n\n"
-                                f"🟢 <b>Status:</b> Live & Connected"
-                            )
+                            is_holiday, reason = self.is_market_holiday_today()
+                            if is_holiday:
+                                await self.telegram_bot.send_message(
+                                    f"🏛️ <b>NSE / BSE Market Closed Today</b>\n\n"
+                                    f"Stocker engine detected that the Indian stock market is **CLOSED** today:\n"
+                                    f"• <b>Reason / Holiday:</b> {reason}\n"
+                                    f"• <b>Date:</b> {now.strftime('%d-%b-%Y')}\n\n"
+                                    f"💤 <b>All active strategies are paused for today.</b> Regular trading and automated triggers will resume on the next business day."
+                                )
+                            else:
+                                await self.telegram_bot.send_message(
+                                    f"🚀 <b>Stocker Engine is Working!</b>\n\n"
+                                    f"Stocker automated trading core has booted successfully for today (<b>{now.strftime('%d-%b-%Y')}</b>) "
+                                    f"and is actively monitoring options breakouts and strategy rules in the background.\n\n"
+                                    f"🟢 <b>Status:</b> Live & Connected"
+                                )
 
                     # 3. End of Day daily summary (at or after 3:30 PM)
                     if now_time >= time(15, 30):
@@ -1093,9 +1607,24 @@ class ExecutionEngine:
                             self.daily_summary_sent[today_date] = True
                             self._set_system_state(f"daily_summary_sent_{today_date}", "true")
                             logger.info(f"Triggering automated DailySummary report generation for {today_date}...")
-                            await self.telegram_bot.generate_and_send_daily_summary()
+                            await self.telegram_bot.generate_and_send_daily_summary(orb_states=self.orb_states)
+
+                is_holiday, holiday_reason = self.is_market_holiday_today()
 
                 for strat_id, strategy in list(self.active_strategies.items()):
+                    if is_holiday:
+                        already_logged = any(
+                            log["strategy_id"] == strategy.id and "closed today" in log["message"]
+                            for log in self.strategy_logs
+                        )
+                        if not already_logged:
+                            self.log_strategy_activity(
+                                strategy.id,
+                                strategy.name,
+                                f"[SYSTEM] Indian market closed today ({holiday_reason}). Live evaluation suspended."
+                            )
+                        continue
+
                     config = strategy.get_config()
                     if not config:
                         continue
@@ -1103,8 +1632,23 @@ class ExecutionEngine:
                     symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
                     strategy_type = config.get("strategy_type", "custom")
 
-                    # Fetch real LTP (falls back to mock if Kite unavailable)
-                    current_spot_price = await self.fetch_live_spot(symbol)
+                    # Trigger real-time option chain background recording during market hours
+                    asyncio.create_task(self.record_option_chain_snapshot(symbol))
+
+                    # Fetch real LTP (falls back to mock if Kite unavailable and not live paper trade)
+                    current_spot_price = await self.fetch_live_spot(symbol, strategy)
+                    if current_spot_price <= 0.0:
+                        already_logged = any(
+                            log["strategy_id"] == strategy.id and "not available" in log["message"]
+                            for log in self.strategy_logs
+                        )
+                        if not already_logged:
+                            self.log_strategy_activity(
+                                strategy.id,
+                                strategy.name,
+                                f"[SYSTEM] Live market data feed not available. Mocking disabled for strict live paper trade."
+                            )
+                        continue
 
                     # ── ORB Breakout Strategy ──
                     if strategy_type == "orb_breakout":

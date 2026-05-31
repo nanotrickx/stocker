@@ -48,7 +48,7 @@ class TelegramBot:
             logger.error(f"Error while dispatching telegram message: {e}")
             return False
 
-    async def generate_and_send_daily_summary(self) -> Optional[DailySummary]:
+    async def generate_and_send_daily_summary(self, orb_states: Optional[dict] = None) -> Optional[DailySummary]:
         """
         Gathers all trades closed today, computes metrics (Win Rate %, total P&L),
         records a DailySummary to database, and posts a premium styled bulletin to Telegram.
@@ -109,10 +109,24 @@ class TelegramBot:
 
                 for index, t in enumerate(closed_trades, 1):
                     indicator = "🟢" if (t.pnl or 0) >= 0 else "🔴"
+                    entry_t_str = t.entry_time.strftime("%I:%M:%S %p") if t.entry_time else "N/A"
+                    exit_t_str = t.exit_time.strftime("%I:%M:%S %p") if t.exit_time else "N/A"
+                    
+                    details_str = ""
+                    if orb_states and t.instance_id and t.instance_id in orb_states:
+                        state = orb_states[t.instance_id]
+                        if state.opening_high is not None and state.opening_low is not None:
+                            details_str = (
+                                f"   • Index Opening Range: H {state.opening_high:.2f} | L {state.opening_low:.2f}\n"
+                                f"   • CE Option ({state.selected_ce_strike:.0f}) Open High: ₹{state.ce_option_opening_high:.2f}\n"
+                                f"   • PE Option ({state.selected_pe_strike:.0f}) Open High: ₹{state.pe_option_opening_high:.2f}\n"
+                            )
+
                     msg += (
                         f"{index}. {indicator} <b>{t.symbol}</b> ({t.mode})\n"
-                        f"   • Entry: ₹{t.entry_price} | Exit: ₹{t.exit_price}\n"
+                        f"   • Entry: ₹{t.entry_price} ({entry_t_str}) | Exit: ₹{t.exit_price} ({exit_t_str})\n"
                         f"   • P&L: ₹{round(t.pnl or 0.0, 2)} ({t.exit_reason})\n"
+                        f"{details_str}"
                     )
             else:
                 msg = (

@@ -1,821 +1,20 @@
 import asyncio
 import logging
-from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from sqlmodel import Session, select
 from app.database import engine, Trade, BrokerCredential, now_ist
 
-try:
-    from pya3 import Aliceblue, TransactionType, OrderType, ProductType, LiveFeedType
-    from pya3.utils import Alice_Wrapper
-    ALICE_AVAILABLE = True
-except ImportError:
-    ALICE_AVAILABLE = False
-
+from app.brokers import (
+    BaseBroker,
+    PaperBroker,
+    KiteBroker,
+    ShoonyaBroker,
+    AliceBlueBroker,
+    DhanBroker,
+)
 
 logger = logging.getLogger("Stocker.BrokerManager")
-
-class BaseBroker(ABC):
-    @abstractmethod
-    async def login(self, credentials: Dict[str, Any]) -> bool:
-        """Authenticate with the broker using credentials."""
-        pass
-
-    @abstractmethod
-    async def get_profile(self) -> Dict[str, Any]:
-        """Fetch unified user profile, margins, and available funds."""
-        pass
-
-    @abstractmethod
-    async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        """Fetch current LTP (Last Traded Price) and OHLC for symbols."""
-        pass
-
-    @abstractmethod
-    async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
-                            quantity: int, option_type: Optional[str] = None, 
-                            strike_price: Optional[float] = None, expiry: Optional[str] = None,
-                            price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
-        """Place an order and return unified trade information."""
-        pass
-
-    @abstractmethod
-    async def cancel_order(self, order_id: str) -> bool:
-        """Cancel an open order."""
-        pass
-
-    @abstractmethod
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        """Fetch unified open positions."""
-        pass
-
-    @abstractmethod
-    async def get_ltp(self, symbol: str) -> float:
-        """Fetch unified Last Traded Price (LTP) for a symbol."""
-        pass
-
-
-class PaperBroker(BaseBroker):
-    """
-    Simulated Broker that executes trades locally using SQLite DB.
-    Ideal for paper-trading options and stocks.
-    """
-    def __init__(self):
-        self.mock_balance = 100000.0  # 1 Lakh mock capital
-
-    async def login(self, credentials: Dict[str, Any]) -> bool:
-        logger.info("PaperBroker login successful (sandbox environment).")
-        return True
-
-    async def get_profile(self) -> Dict[str, Any]:
-        with Session(engine) as session:
-            # Calculate total active paper trade P&L
-            statement = select(Trade).where(Trade.status == "OPEN", Trade.mode == "PAPER")
-            open_trades = session.exec(statement).all()
-            
-            # Simple mock calculations
-            used_margin = sum(trade.entry_price * trade.quantity for trade in open_trades)
-            available_balance = self.mock_balance - used_margin
-            
-            return {
-                "broker": "PAPER",
-                "client_id": "PAPER_TRADER_01",
-                "client_name": "Paper Simulator Account",
-                "available_funds": available_balance,
-                "used_margin": used_margin,
-                "total_equity": self.mock_balance
-            }
-
-    async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        # Return mock quotes for testing if live quotes are not fed yet
-        quotes = {}
-        for symbol in symbols:
-            quotes[symbol] = {
-                "last_price": 22000.0 if "NIFTY" in symbol else 100.0,
-                "ohlc": {"open": 22010.0, "high": 22080.0, "low": 21950.0, "close": 22000.0}
-            }
-        return quotes
-
-    async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
-                            quantity: int, option_type: Optional[str] = None, 
-                            strike_price: Optional[float] = None, expiry: Optional[str] = None,
-                            price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
-        
-        # In Paper Trading, orders are executed immediately at the specified price or mock LTP
-        fill_price = price if price is not None else (22000.0 if "NIFTY" in symbol else 100.0)
-        
-        with Session(engine) as session:
-            if transaction_type.upper() == "BUY":
-                # Create a new paper trade position
-                trade = Trade(
-                    strategy_id=strategy_id,
-                    instance_id=instance_id,
-                    symbol=symbol,
-                    option_type=option_type,
-                    strike_price=strike_price,
-                    expiry=expiry,
-                    quantity=quantity,
-                    entry_price=fill_price,
-                    status="OPEN",
-                    mode="PAPER",
-                    broker_order_id=f"PAPER_ORD_{int(datetime.utcnow().timestamp())}"
-                )
-                session.add(trade)
-                session.commit()
-                session.refresh(trade)
-                logger.info(f"[PAPER BUY] Created position: {symbol} at {fill_price} | Qty: {quantity}")
-                return {"status": "SUCCESS", "trade": trade}
-            
-            elif transaction_type.upper() == "SELL":
-                # Close the existing paper trade position for this symbol/strategy
-                statement = select(Trade).where(
-                    Trade.instance_id == instance_id if instance_id else Trade.strategy_id == strategy_id,
-                    Trade.symbol == symbol,
-                    Trade.status == "OPEN",
-                    Trade.mode == "PAPER"
-                )
-                open_trade = session.exec(statement).first()
-                
-                if open_trade:
-                    open_trade.exit_price = fill_price
-                    open_trade.exit_time = now_ist()
-                    open_trade.status = "CLOSED"
-                    # Calculate realized P&L: (Exit - Entry) * Qty
-                    open_trade.pnl = (fill_price - open_trade.entry_price) * quantity
-                    session.add(open_trade)
-                    session.commit()
-                    session.refresh(open_trade)
-                    logger.info(f"[PAPER SELL] Closed position: {symbol} at {fill_price} | P&L: {open_trade.pnl}")
-                    return {"status": "SUCCESS", "trade": open_trade}
-                else:
-                    return {"status": "ERROR", "message": "No open paper position found to close"}
-        
-        return {"status": "ERROR", "message": "Unknown transaction type"}
-
-    async def cancel_order(self, order_id: str) -> bool:
-        return True
-
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        with Session(engine) as session:
-            statement = select(Trade).where(Trade.status == "OPEN", Trade.mode == "PAPER")
-            open_trades = session.exec(statement).all()
-            return [
-                {
-                    "trade_id": t.id,
-                    "strategy_id": t.strategy_id,
-                    "symbol": t.symbol,
-                    "option_type": t.option_type,
-                    "strike_price": t.strike_price,
-                    "quantity": t.quantity,
-                    "entry_price": t.entry_price,
-                    "entry_time": t.entry_time.isoformat(),
-                    "mode": t.mode
-                }
-                for t in open_trades
-            ]
-
-    async def get_ltp(self, symbol: str) -> float:
-        # Try to fetch actual live LTP from Zerodha Kite if active
-        try:
-            with Session(engine) as session:
-                cred = session.exec(select(BrokerCredential).where(
-                    BrokerCredential.broker_name == "kite",
-                    BrokerCredential.active == True
-                )).first()
-                if cred and cred.access_token:
-                    from kiteconnect import KiteConnect
-                    kite = KiteConnect(api_key=cred.api_key)
-                    kite.set_access_token(cred.access_token)
-                    loop = asyncio.get_event_loop()
-                    
-                    # Convert to formatted trading symbol
-                    trading_symbol = symbol.replace(" ", "").replace("_", "")
-                    ltp_key = symbol if ":" in symbol else (f"NSE:{trading_symbol}" if "NIFTY50" in trading_symbol or "BANKNIFTY" in trading_symbol else f"NFO:{trading_symbol}")
-                    
-                    res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
-                    if res and ltp_key in res:
-                        return float(res[ltp_key]["last_price"])
-        except Exception as e:
-            logger.debug(f"PaperBroker actual LTP query failed: {e}")
-            
-        # Simulated fallback
-        if "NIFTY" in symbol and "BANK" not in symbol:
-            return 24500.0 if "CE" not in symbol and "PE" not in symbol else 100.0
-        elif "BANK" in symbol:
-            return 52000.0 if "CE" not in symbol and "PE" not in symbol else 250.0
-        return 100.0
-
-
-try:
-    from kiteconnect import KiteConnect
-    KITE_AVAILABLE = True
-except ImportError:
-    KITE_AVAILABLE = False
-
-class KiteBroker(BaseBroker):
-    """
-    Zerodha Kite Connect SDK Integration Layer.
-    Connects to live Zerodha Kite APIs for margins, live quotes, and NFO order placements.
-    """
-    def __init__(self):
-        self.kite_client = None
-        self.api_key = None
-        self.api_secret = None
-        self.access_token = None
-        self.profile = {}
-
-    async def login(self, credentials: Dict[str, Any]) -> bool:
-        """
-        Logs in using API Key and exchanges a request token (or uses a cached access token).
-        """
-        if not KITE_AVAILABLE:
-            logger.error("KiteConnect library is not installed. Failed to initialize Zerodha login.")
-            return False
-
-        self.api_key = credentials.get("api_key")
-        self.api_secret = credentials.get("api_secret")
-        self.access_token = credentials.get("access_token")
-
-        if not self.api_key or not self.api_secret:
-            logger.error("Zerodha Kite API Key or API Secret is missing in login credentials.")
-            return False
-
-        try:
-            self.kite_client = KiteConnect(api_key=self.api_key)
-            
-            # If we already have a persistent access token, set it directly
-            if self.access_token:
-                self.kite_client.set_access_token(self.access_token)
-                logger.info("Zerodha Kite login established using persistent Access Token.")
-                return True
-                
-            # If a new login request token is supplied, exchange it
-            request_token = credentials.get("request_token")
-            if request_token:
-                session_data = self.kite_client.generate_session(request_token, api_secret=self.api_secret)
-                self.access_token = session_data["access_token"]
-                self.kite_client.set_access_token(self.access_token)
-                
-                # Update access token back into the Database
-                with Session(engine) as db_session:
-                    statement = select(BrokerCredential).where(
-                        BrokerCredential.broker_name == "kite",
-                        BrokerCredential.api_key == self.api_key
-                    )
-                    cred = db_session.exec(statement).first()
-                    if cred:
-                        cred.access_token = self.access_token
-                        db_session.add(cred)
-                        db_session.commit()
-                        logger.info("Zerodha Kite session generated and Access Token saved to SQLite database.")
-                return True
-
-            logger.warning("No request_token or access_token provided. Client instantiated but not authorized.")
-            return False
-
-        except Exception as e:
-            logger.error(f"Error during Zerodha Kite Connect login: {e}")
-            return False
-
-    async def get_profile(self) -> Dict[str, Any]:
-        """Retrieves live account balance and margin details from Zerodha."""
-        if not self.kite_client:
-            return {"broker": "KITE", "status": "DISCONNECTED", "available_funds": 0.0}
-            
-        try:
-            loop = asyncio.get_event_loop()
-            
-            profile_info = {}
-            try:
-                profile_info = await loop.run_in_executor(None, self.kite_client.profile)
-            except Exception as pe:
-                logger.error(f"Error fetching live Zerodha profile info: {pe}")
-                profile_info = {"user_id": "JBK746", "user_name": "Arulmani ."}
-
-            margins = {}
-            margins_connected = True
-            try:
-                margins = await loop.run_in_executor(None, self.kite_client.margins)
-            except Exception as me:
-                logger.warning(f"Error fetching live Zerodha margins (RMS limit issue): {me}. Falling back to 0.0 margin details.")
-                margins_connected = False
-                margins = {}
-
-            # Extract equity available cash margin balance
-            available_funds = float(margins.get("equity", {}).get("net", 0.0))
-            used_margin = float(margins.get("equity", {}).get("utilised", {}).get("debits", 0.0))
-
-            return {
-                "broker": "KITE",
-                "client_id": profile_info.get("user_id", "KITE_USER"),
-                "client_name": profile_info.get("user_name", "Zerodha User"),
-                "available_funds": available_funds,
-                "used_margin": used_margin,
-                "total_equity": available_funds + used_margin,
-                "margins_connected": margins_connected
-            }
-        except Exception as e:
-            logger.error(f"Error fetching Zerodha margins/profile: {e}")
-            return {
-                "broker": "KITE",
-                "status": "ERROR",
-                "message": str(e),
-                "available_funds": 0.0,
-                "used_margin": 0.0,
-                "total_equity": 0.0,
-                "margins_connected": False
-            }
-
-    async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        """Fetches live Last Traded Price (LTP) details from Zerodha."""
-        if not self.kite_client or not symbols:
-            return {}
-
-        try:
-            loop = asyncio.get_event_loop()
-            # Kite Connect expects symbols in format "NSE:INFY", "NFO:NIFTY24MAY22000CE"
-            quotes = await loop.run_in_executor(None, self.kite_client.ltp, symbols)
-            
-            formatted_quotes = {}
-            for sym, data in quotes.items():
-                formatted_quotes[sym] = {
-                    "last_price": float(data.get("last_price", 0.0)),
-                    "ohlc": {"close": float(data.get("last_price", 0.0))}  # fallback standard
-                }
-            return formatted_quotes
-        except Exception as e:
-            logger.error(f"Error querying Zerodha LTP quotes: {e}")
-            return {}
-
-    async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
-                            quantity: int, option_type: Optional[str] = None, 
-                            strike_price: Optional[float] = None, expiry: Optional[str] = None,
-                            price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Executes a regular market order on Zerodha.
-        Orders default to NFO (NSE Futures & Options) for option CE/PE contracts, and NSE for equities.
-        """
-        if not self.kite_client:
-            return {"status": "ERROR", "message": "Kite client not authenticated."}
-
-        # NFO for options/futures, NSE for stock equities
-        exchange = self.kite_client.EXCHANGE_NFO if option_type else self.kite_client.EXCHANGE_NSE
-        transaction = self.kite_client.TRANSACTION_TYPE_BUY if transaction_type.upper() == "BUY" else self.kite_client.TRANSACTION_TYPE_SELL
-        order_type = self.kite_client.ORDER_TYPE_MARKET if price is None else self.kite_client.ORDER_TYPE_LIMIT
-
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # Place order on Zerodha backend
-            order_id = await loop.run_in_executor(
-                None,
-                lambda: self.kite_client.place_order(
-                    variety=self.kite_client.VARIETY_REGULAR,
-                    exchange=exchange,
-                    tradingsymbol=symbol,
-                    transaction_type=transaction,
-                    quantity=quantity,
-                    product=self.kite_client.PRODUCT_MIS,  # Intraday default
-                    order_type=order_type,
-                    price=price,
-                    validity=self.kite_client.VALIDITY_DAY
-                )
-            )
-
-            logger.info(f"Zerodha Order Placed Successfully. Order ID: {order_id}")
-
-            # Fetch the actual fill price from Zerodha order book if filled
-            fill_price = price if price is not None else 0.0
-            try:
-                order_history = await loop.run_in_executor(None, self.kite_client.order_history, order_id)
-                for status_record in reversed(order_history):
-                    if status_record.get("status") == "COMPLETE":
-                        fill_price = float(status_record.get("average_price", fill_price))
-                        break
-            except Exception:
-                pass
-
-            # Sync local SQLite status
-            with Session(engine) as session:
-                if transaction_type.upper() == "BUY":
-                    trade = Trade(
-                        strategy_id=strategy_id,
-                        instance_id=instance_id,
-                        symbol=symbol,
-                        option_type=option_type,
-                        strike_price=strike_price,
-                        expiry=expiry,
-                        quantity=quantity,
-                        entry_price=fill_price if fill_price > 0 else 100.0,  # fallback
-                        status="OPEN",
-                        mode="LIVE",
-                        broker_order_id=order_id
-                    )
-                    session.add(trade)
-                    session.commit()
-                    session.refresh(trade)
-                    return {"status": "SUCCESS", "trade": trade}
-                
-                elif transaction_type.upper() == "SELL":
-                    statement = select(Trade).where(
-                        Trade.instance_id == instance_id if instance_id else Trade.strategy_id == strategy_id,
-                        Trade.symbol == symbol,
-                        Trade.status == "OPEN",
-                        Trade.mode == "LIVE"
-                    )
-                    open_trade = session.exec(statement).first()
-                    if open_trade:
-                        open_trade.exit_price = fill_price if fill_price > 0 else 100.0
-                        open_trade.exit_time = now_ist()
-                        open_trade.status = "CLOSED"
-                        open_trade.pnl = (open_trade.exit_price - open_trade.entry_price) * quantity
-                        session.add(open_trade)
-                        session.commit()
-                        session.refresh(open_trade)
-                        return {"status": "SUCCESS", "trade": open_trade}
-                    else:
-                        return {"status": "ERROR", "message": "No open live positions in SQLite to close."}
-
-        except Exception as e:
-            logger.error(f"Failed to place Zerodha order: {e}")
-            return {"status": "ERROR", "message": str(e)}
-
-    async def cancel_order(self, order_id: str) -> bool:
-        if not self.kite_client:
-            return False
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.kite_client.cancel_order(
-                    variety=self.kite_client.VARIETY_REGULAR,
-                    order_id=order_id
-                )
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error cancelling Zerodha order {order_id}: {e}")
-            return False
-
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        """Retrieves all open portfolio positions directly from Zerodha Kite Connect."""
-        if not self.kite_client:
-            return []
-        try:
-            loop = asyncio.get_event_loop()
-            positions_data = await loop.run_in_executor(None, self.kite_client.positions)
-            
-            # Combine net and day positions
-            net_positions = positions_data.get("net", [])
-            open_positions = []
-            for pos in net_positions:
-                quantity = int(pos.get("quantity", 0))
-                if quantity != 0:
-                    open_positions.append({
-                        "symbol": pos.get("tradingsymbol"),
-                        "quantity": quantity,
-                        "buy_price": float(pos.get("buy_price", 0.0)),
-                        "last_price": float(pos.get("last_price", 0.0)),
-                        "pnl": float(pos.get("pnl", 0.0)),
-                        "exchange": pos.get("exchange")
-                    })
-            return open_positions
-        except Exception as e:
-            logger.error(f"Error fetching live Zerodha positions: {e}")
-            return []
-
-    async def get_ltp(self, symbol: str) -> float:
-        """Fetches live Last Traded Price (LTP) from Zerodha Kite."""
-        if not self.kite_client:
-            raise RuntimeError("Kite client not authenticated.")
-        
-        loop = asyncio.get_event_loop()
-        trading_symbol = symbol.replace(" ", "").replace("_", "")
-        ltp_key = symbol if ":" in symbol else (f"NSE:{trading_symbol}" if "NIFTY50" in trading_symbol or "BANKNIFTY" in trading_symbol else f"NFO:{trading_symbol}")
-        
-        res = await loop.run_in_executor(None, lambda: self.kite_client.ltp([ltp_key]))
-        if res and ltp_key in res:
-            return float(res[ltp_key]["last_price"])
-        raise ValueError(f"Symbol {symbol} not found in Zerodha LTP response.")
-
-
-class ShoonyaBroker(BaseBroker):
-    """
-    Finvasia Shoonya API integration layer.
-    """
-    async def login(self, credentials: Dict[str, Any]) -> bool:
-        logger.info("Initializing Finvasia Shoonya Client...")
-        return True
-
-    async def get_profile(self) -> Dict[str, Any]:
-        return {"broker": "SHOONYA", "client_id": "SHOONYA_MOCK_USER", "available_funds": 250000.0}
-
-    async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        return {}
-
-    async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
-                            quantity: int, option_type: Optional[str] = None, 
-                            strike_price: Optional[float] = None, expiry: Optional[str] = None,
-                            price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
-        return {"status": "SUCCESS"}
-
-    async def cancel_order(self, order_id: str) -> bool:
-        return True
-
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        return []
-
-    async def get_ltp(self, symbol: str) -> float:
-        return 100.0
-
-
-class AliceBlueBroker(BaseBroker):
-    """
-    Alice Blue V2 API (ANT A3) SDK Integration Layer.
-    Uses official pya3 library to query balances, fetch profile stats, and route live trades.
-    """
-    def __init__(self):
-        self.alice_client = None
-        self.user_id = None
-        self.api_key = None
-        self.session_id = None
-
-    async def login(self, credentials: Dict[str, Any]) -> bool:
-        """Authenticates with Alice Blue using Client ID (user_id) and API Key."""
-        if not ALICE_AVAILABLE:
-            logger.error("pya3 library is not installed. Failed to initialize Alice Blue broker.")
-            return False
-
-        self.user_id = credentials.get("client_id") or credentials.get("user_id")
-        self.api_key = credentials.get("api_key")
-        self.session_id = credentials.get("access_token")  # Cached session ID
-
-        if not self.user_id or not self.api_key:
-            logger.error("Alice Blue client_id/user_id or api_key is missing in credentials.")
-            return False
-
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # If we already have a cached session_id, instantiate Aliceblue with it
-            if self.session_id:
-                self.alice_client = Aliceblue(user_id=self.user_id, api_key=self.api_key, session_id=self.session_id)
-                logger.info("Alice Blue session initialized using cached session ID.")
-                return True
-
-            # Otherwise, perform a fresh login and session generation
-            self.alice_client = Aliceblue(user_id=self.user_id, api_key=self.api_key)
-            session_data = await loop.run_in_executor(None, self.alice_client.get_session_id)
-            
-            if session_data and isinstance(session_data, dict) and "sessionID" in session_data:
-                self.session_id = session_data["sessionID"]
-                logger.info(f"Alice Blue login successful. Session ID generated: {self.session_id}")
-
-                # Save generated session ID back into SQLite BrokerCredential access_token column
-                with Session(engine) as db_session:
-                    statement = select(BrokerCredential).where(
-                        BrokerCredential.broker_name == "aliceblue",
-                        BrokerCredential.api_key == self.api_key
-                    )
-                    cred = db_session.exec(statement).first()
-                    if cred:
-                        cred.access_token = self.session_id
-                        db_session.add(cred)
-                        db_session.commit()
-                        logger.info("Alice Blue session ID successfully saved to SQLite database.")
-                return True
-
-            logger.error("Failed to generate Alice Blue session ID. Verify credentials.")
-            return False
-        except Exception as e:
-            logger.error(f"Error during Alice Blue login session: {e}")
-            return False
-
-    async def get_profile(self) -> Dict[str, Any]:
-        """Fetches live balance and account limits from Alice Blue."""
-        if not self.alice_client:
-            return {"broker": "ALICEBLUE", "status": "DISCONNECTED", "available_funds": 0.0}
-
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # Query balance and profile APIs concurrently using executor threads
-            balance_res = await loop.run_in_executor(None, self.alice_client.get_balance)
-            profile_res = await loop.run_in_executor(None, self.alice_client.get_profile)
-
-            # Extract fields via pya3 wrapper helpers or direct dictionary parse
-            balance_data = Alice_Wrapper.get_balance(balance_res) if ALICE_AVAILABLE else {}
-            profile_data = Alice_Wrapper.get_profile(profile_res) if ALICE_AVAILABLE else {}
-
-            # Parse numeric funds securely
-            available_funds = 0.0
-            if balance_data and isinstance(balance_data, list) and len(balance_data) > 0:
-                available_funds = float(balance_data[0].get("cashmarginavailable", 0.0))
-            elif isinstance(balance_res, dict):
-                # Fallback to direct dict parse
-                available_funds = float(balance_res.get("cashmarginavailable", 0.0))
-
-            client_name = "Alice Blue Account"
-            if profile_data and isinstance(profile_data, dict):
-                client_name = profile_data.get("accountname", client_name)
-
-            return {
-                "broker": "ALICEBLUE",
-                "client_id": self.user_id or "ALICE_USER",
-                "client_name": client_name,
-                "available_funds": available_funds,
-                "used_margin": 0.0,
-                "total_equity": available_funds
-            }
-        except Exception as e:
-            logger.error(f"Error querying Alice Blue account profile: {e}")
-            return {"broker": "ALICEBLUE", "status": "ERROR", "message": str(e), "available_funds": 0.0}
-
-    async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        """Fetches scrip information and quotes from Alice Blue."""
-        if not self.alice_client or not symbols:
-            return {}
-
-        quotes = {}
-        try:
-            loop = asyncio.get_event_loop()
-            # Alice Blue retrieves instruments from the master scrip files download
-            for symbol in symbols:
-                # Extract exchange and trading symbol e.g. "NSE:RELIANCE"
-                parts = symbol.split(":")
-                exch = parts[0] if len(parts) > 1 else "NSE"
-                sym = parts[1] if len(parts) > 1 else symbol
-
-                instrument = await loop.run_in_executor(
-                    None, 
-                    lambda: self.alice_client.get_instrument_by_symbol(exch, sym)
-                )
-
-                if instrument:
-                    # In a real WebSocket feed, real-time prices stream continuously.
-                    # For instant REST query fallback, we read the base strike/scrip tick info or return mock Nifty metrics
-                    quotes[symbol] = {
-                        "last_price": 22050.0 if "NIFTY" in sym else 150.0,
-                        "ohlc": {"close": 22050.0 if "NIFTY" in sym else 150.0}
-                    }
-            return quotes
-        except Exception as e:
-            logger.error(f"Error querying Alice Blue live quotes: {e}")
-            return {}
-
-    async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
-                            quantity: int, option_type: Optional[str] = None, 
-                            strike_price: Optional[float] = None, expiry: Optional[str] = None,
-                            price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
-        """Routes a market or limit order to Alice Blue V2 API."""
-        if not self.alice_client:
-            return {"status": "ERROR", "message": "Alice Blue client not authenticated."}
-
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # 1. Parse segment exchange and trading symbol
-            parts = symbol.split(":")
-            exch = parts[0] if len(parts) > 1 else ("NFO" if option_type else "NSE")
-            sym = parts[1] if len(parts) > 1 else symbol
-
-            # 2. Query instrument scrip contract details
-            instrument = await loop.run_in_executor(
-                None,
-                lambda: self.alice_client.get_instrument_by_symbol(exch, sym)
-            )
-
-            if not instrument:
-                return {"status": "ERROR", "message": f"Instrument scrip '{exch}:{sym}' not found in Alice Blue master contract."}
-
-            # 3. Map order routing variables to pya3 constants
-            trans_type = TransactionType.Buy if transaction_type.upper() == "BUY" else TransactionType.Sell
-            ord_type = OrderType.Market if price is None else OrderType.Limit
-            prod_type = ProductType.Intraday # Default Intraday MIS
-
-            # 4. Fire order execution request via executor thread
-            order_res = await loop.run_in_executor(
-                None,
-                lambda: self.alice_client.place_order(
-                    transaction_type=trans_type,
-                    instrument=instrument,
-                    quantity=quantity,
-                    order_type=ord_type,
-                    product_type=prod_type,
-                    price=float(price) if price else 0.0,
-                    trigger_price=0.0
-                )
-            )
-
-            logger.info(f"Alice Blue order submitted. Response: {order_res}")
-            
-            order_id = "ALICE_MOCK_ORD"
-            if order_res and isinstance(order_res, dict):
-                order_id = order_res.get("NOrdNo") or order_res.get("result", order_id)
-
-            fill_price = price if price is not None else 100.0
-
-            # 5. Persist order status in SQLite DB
-            with Session(engine) as session:
-                if transaction_type.upper() == "BUY":
-                    trade = Trade(
-                        strategy_id=strategy_id,
-                        instance_id=instance_id,
-                        symbol=symbol,
-                        option_type=option_type,
-                        strike_price=strike_price,
-                        expiry=expiry,
-                        quantity=quantity,
-                        entry_price=fill_price,
-                        status="OPEN",
-                        mode="LIVE",
-                        broker_order_id=order_id
-                    )
-                    session.add(trade)
-                    session.commit()
-                    session.refresh(trade)
-                    return {"status": "SUCCESS", "trade": trade}
-                
-                elif transaction_type.upper() == "SELL":
-                    statement = select(Trade).where(
-                        Trade.instance_id == instance_id if instance_id else Trade.strategy_id == strategy_id,
-                        Trade.symbol == symbol,
-                        Trade.status == "OPEN",
-                        Trade.mode == "LIVE"
-                    )
-                    open_trade = session.exec(statement).first()
-                    if open_trade:
-                        open_trade.exit_price = fill_price
-                        open_trade.exit_time = now_ist()
-                        open_trade.status = "CLOSED"
-                        open_trade.pnl = (open_trade.exit_price - open_trade.entry_price) * quantity
-                        session.add(open_trade)
-                        session.commit()
-                        session.refresh(open_trade)
-                        return {"status": "SUCCESS", "trade": open_trade}
-                    else:
-                        return {"status": "ERROR", "message": "No open live positions in SQLite to close."}
-
-        except Exception as e:
-            logger.error(f"Failed to place Alice Blue order: {e}")
-            return {"status": "ERROR", "message": str(e)}
-
-    async def cancel_order(self, order_id: str) -> bool:
-        if not self.alice_client:
-            return False
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.alice_client.cancel_order(order_id)
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error cancelling Alice Blue order {order_id}: {e}")
-            return False
-
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        """Retrieves active positions from Alice Blue."""
-        if not self.alice_client:
-            return []
-        try:
-            loop = asyncio.get_event_loop()
-            pos_res = await loop.run_in_executor(None, self.alice_client.get_positions)
-            
-            open_positions = []
-            if pos_res and isinstance(pos_res, list):
-                for pos in pos_res:
-                    qty = int(pos.get("netqty", 0))
-                    if qty != 0:
-                        open_positions.append({
-                            "symbol": pos.get("tsym"),
-                            "quantity": qty,
-                            "buy_price": float(pos.get("buyavgprc", 0.0)),
-                            "last_price": float(pos.get("ltp", 0.0)),
-                            "pnl": float(pos.get("pnl", 0.0)),
-                            "exchange": pos.get("exch")
-                        })
-            return open_positions
-        except Exception as e:
-            logger.error(f"Error fetching Alice Blue positions: {e}")
-            return []
-
-    async def get_ltp(self, symbol: str) -> float:
-        """Fetches live Last Traded Price (LTP) from Alice Blue."""
-        if not self.alice_client:
-            raise RuntimeError("Alice Blue client not authenticated.")
-        try:
-            loop = asyncio.get_event_loop()
-            # pya3 uses get_instrument_by_symbol or similar, let's look up instrument ltp
-            # For simplicity, we can fetch all open positions or fallback, or fetch quote
-            # ANT API has get_scrip_info or similar:
-            res = await loop.run_in_executor(None, self.alice_client.get_scrip_info, symbol)
-            if res and isinstance(res, dict) and "ltp" in res:
-                return float(res["ltp"])
-        except Exception:
-            pass
-        return 100.0
 
 
 # Broker Factory
@@ -829,8 +28,265 @@ def get_broker(broker_name: str) -> BaseBroker:
         return ShoonyaBroker()
     elif name_lower == "aliceblue" or name_lower == "alice":
         return AliceBlueBroker()
+    elif name_lower == "dhan" or name_lower == "dhanhq":
+        return DhanBroker()
     else:
         # Default back to Paper trading for safety
         logger.warning(f"Broker '{broker_name}' not supported. Defaulting to PaperBroker.")
         return PaperBroker()
 
+
+async def fetch_unified_full_portfolio(active_cred: BrokerCredential, engine_instance) -> Dict[str, Any]:
+    """
+    Unified portfolio, profile, margins, holdings, and positions query helper.
+    Completely isolated from main.py route handlers.
+    """
+    broker_name = active_cred.broker_name
+    
+    if broker_name == "kite":
+        kite_broker = engine_instance.broker_clients.get("KITE")
+        if not kite_broker or not kite_broker.kite_client:
+            raise Exception("Zerodha Kite client is not initialized or logged in. Check settings API keys.")
+            
+        loop = asyncio.get_event_loop()
+        profile = {}
+        try:
+            profile = await loop.run_in_executor(None, kite_broker.kite_client.profile)
+        except Exception as pe:
+            logger.error(f"Error fetching Zerodha profile: {pe}")
+            profile = {"user_id": "JBK746", "user_name": "Arulmani .", "email": "jerrymani33@gmail.com"}
+
+        margins = {}
+        margins_connected = True
+        try:
+            margins = await loop.run_in_executor(None, kite_broker.kite_client.margins)
+        except Exception as me:
+            logger.warning(f"Zerodha margins API failed (RMS issue): {me}. Falling back to empty margin layout.")
+            margins_connected = False
+            margins = {}
+        
+        holdings = []
+        try:
+            holdings = await loop.run_in_executor(None, kite_broker.kite_client.holdings)
+        except Exception as he:
+            logger.error(f"Error fetching Zerodha holdings: {he}")
+
+        positions_res = {}
+        try:
+            positions_res = await loop.run_in_executor(None, kite_broker.kite_client.positions)
+        except Exception as pose:
+            logger.error(f"Error fetching Zerodha positions: {pose}")
+            
+        equity = margins.get('equity', {})
+        net_positions = positions_res.get("net", []) if isinstance(positions_res, dict) else []
+        
+        return {
+            "status": "SUCCESS",
+            "broker_name": "Zerodha Kite Connect",
+            "profile": {
+                "user_id": profile.get("user_id", "N/A"),
+                "user_name": profile.get("user_name", "N/A"),
+                "email": profile.get("email", "N/A"),
+                "broker": "ZERODHA"
+            },
+            "margins": {
+                "cash": float(equity.get("net", 0.0)),
+                "available": float(equity.get("available", {}).get("cash", 0.0)),
+                "used": float(equity.get("utilised", {}).get("debits", 0.0)),
+                "collateral": float(equity.get("utilised", {}).get("liquid_collateral", 0.0)),
+                "connected": margins_connected
+            },
+            "holdings": [
+                {
+                    "tradingsymbol": h.get("tradingsymbol", ""),
+                    "exchange": h.get("exchange", ""),
+                    "quantity": int(h.get("quantity", 0)),
+                    "average_price": float(h.get("average_price", 0.0)),
+                    "last_price": float(h.get("last_price", 0.0)),
+                    "pnl": float(h.get("pnl", 0.0))
+                }
+                for h in holdings
+            ],
+            "positions": [
+                {
+                    "tradingsymbol": p.get("tradingsymbol", ""),
+                    "exchange": p.get("exchange", ""),
+                    "quantity": int(p.get("quantity", 0)),
+                    "average_price": float(p.get("average_price", 0.0)),
+                    "last_price": float(p.get("last_price", 0.0)),
+                    "pnl": float(p.get("pnl", 0.0))
+                }
+                for p in net_positions
+            ]
+        }
+        
+    elif broker_name == "aliceblue":
+        alice_broker = engine_instance.broker_clients.get("ALICEBLUE")
+        if not alice_broker or not alice_broker.alice:
+            raise Exception("Alice Blue ANT client is not logged in. Check settings API keys.")
+            
+        loop = asyncio.get_event_loop()
+        profile = await loop.run_in_executor(None, alice_broker.alice.get_profile_id)
+        balance = await loop.run_in_executor(None, alice_broker.alice.get_balance)
+        holdings = await loop.run_in_executor(None, alice_broker.alice.get_holding_position)
+        
+        cash = 0.0
+        if balance:
+            cash = float(balance[0].get('cash') if isinstance(balance, list) else balance.get('cash', 0.0))
+            
+        formatted_holdings = []
+        if holdings and isinstance(holdings, list):
+            for h in holdings:
+                formatted_holdings.append({
+                    "tradingsymbol": h.get("TSYM", ""),
+                    "exchange": h.get("EXCH", ""),
+                    "quantity": int(h.get("QTY", 0)),
+                    "average_price": float(h.get("AVGPRC", 0.0)),
+                    "last_price": float(h.get("LTP", 0.0)),
+                    "pnl": float(h.get("PNL", 0.0))
+                })
+                
+        return {
+            "status": "SUCCESS",
+            "broker_name": "Alice Blue ANT API",
+            "profile": {
+                "user_id": profile.get("account_id", "N/A") if isinstance(profile, dict) else str(profile),
+                "user_name": "Alice Blue Account",
+                "email": "N/A",
+                "broker": "ALICEBLUE"
+            },
+            "margins": {
+                "cash": cash,
+                "available": cash,
+                "used": 0.0,
+                "collateral": 0.0,
+                "connected": True if balance else False
+            },
+            "holdings": formatted_holdings
+        }
+        
+    elif broker_name == "dhan":
+        import requests
+        headers = {
+            "Content-Type": "application/json",
+            "access-token": active_cred.access_token or active_cred.api_secret,
+            "client-id": active_cred.api_key
+        }
+        
+        profile = {"user_id": active_cred.api_key, "user_name": "Dhan Trader", "email": "N/A", "broker": "DHAN"}
+        try:
+            p_resp = requests.get("https://api.dhan.co/v2/profile", headers=headers, timeout=10)
+            if p_resp.status_code == 200:
+                p_data = p_resp.json()
+                profile = {
+                    "user_id": p_data.get("dhanClientId", active_cred.api_key),
+                    "user_name": "Dhan Account",
+                    "email": "N/A",
+                    "broker": "DHAN"
+                }
+        except Exception as pe:
+            logger.error(f"Error fetching Dhan profile: {pe}")
+
+        cash = 0.0
+        avail = 0.0
+        used = 0.0
+        collateral = 0.0
+        connected = False
+        try:
+            f_resp = requests.get("https://api.dhan.co/v2/fundlimit", headers=headers, timeout=10)
+            if f_resp.status_code == 200:
+                f_data = f_resp.json()
+                cash = float(f_data.get("availabelBalance", 0.0))
+                avail = float(f_data.get("availabelBalance", 0.0))
+                used = float(f_data.get("utilizedAmount", 0.0))
+                collateral = float(f_data.get("collateralAmount", 0.0))
+                connected = True
+        except Exception as fe:
+            logger.error(f"Error fetching Dhan fund limits: {fe}")
+
+        return {
+            "status": "SUCCESS",
+            "broker_name": "DhanHQ Options API",
+            "profile": profile,
+            "margins": {
+                "cash": cash,
+                "available": avail,
+                "used": used,
+                "collateral": collateral,
+                "connected": connected
+            },
+            "holdings": [],
+            "positions": []
+        }
+        
+    else:
+        raise Exception(f"Full portfolio fetch not supported for active broker: {broker_name}")
+
+
+async def fetch_unified_margins(active_cred: BrokerCredential, engine_instance) -> Dict[str, Any]:
+    """
+    Unified simple cash margin ledger query helper.
+    Completely isolated from main.py.
+    """
+    broker_name = active_cred.broker_name if active_cred else "kite"
+    
+    cash_balance = 0.0
+    used_margin = 0.0
+    collateral = 0.0
+    available_margin = 0.0
+    is_live = False
+    
+    if broker_name == "kite":
+        try:
+            kite_broker = engine_instance.broker_clients.get("KITE")
+            if kite_broker and kite_broker.kite_client:
+                loop = asyncio.get_event_loop()
+                margins = await loop.run_in_executor(None, kite_broker.kite_client.margins)
+                equity = margins.get('equity', {})
+                cash_balance = float(equity.get('net', cash_balance))
+                available_margin = float(equity.get('available', {}).get('cash', available_margin))
+                used_margin = float(equity.get('utilised', {}).get('debits', used_margin))
+                is_live = True
+        except Exception as e:
+            logger.info(f"Skipping live margins fetch for Kite: {e}. Returning high fidelity demo metrics.")
+            
+    elif broker_name == "aliceblue":
+        try:
+            if hasattr(engine_instance, 'alice') and engine_instance.alice:
+                loop = asyncio.get_event_loop()
+                balance = await loop.run_in_executor(None, engine_instance.alice.get_balance)
+                if balance:
+                    cash_balance = float(balance[0].get('cash', cash_balance) if isinstance(balance, list) else balance.get('cash', cash_balance))
+                    available_margin = cash_balance
+                    used_margin = 0.0
+                    is_live = True
+        except Exception as e:
+            logger.info(f"Skipping live margins fetch for AliceBlue: {e}. Returning high fidelity demo metrics.")
+            
+    elif broker_name == "dhan":
+        try:
+            import requests
+            headers = {
+                "Content-Type": "application/json",
+                "access-token": active_cred.access_token or active_cred.api_secret,
+                "client-id": active_cred.api_key
+            }
+            f_resp = requests.get("https://api.dhan.co/v2/fundlimit", headers=headers, timeout=10)
+            if f_resp.status_code == 200:
+                f_data = f_resp.json()
+                cash_balance = float(f_data.get("availabelBalance", 0.0))
+                available_margin = float(f_data.get("availabelBalance", 0.0))
+                used_margin = float(f_data.get("utilizedAmount", 0.0))
+                collateral = float(f_data.get("collateralAmount", 0.0))
+                is_live = True
+        except Exception as e:
+            logger.info(f"Skipping live margins fetch for Dhan: {e}.")
+
+    return {
+        "broker_name": broker_name,
+        "is_live": is_live,
+        "cash_balance": cash_balance,
+        "used_margin": used_margin,
+        "collateral_margin": collateral,
+        "available_margin": available_margin
+    }

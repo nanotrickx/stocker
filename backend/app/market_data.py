@@ -325,7 +325,125 @@ class KiteMarketDataProvider(BaseMarketDataProvider):
 # ── Simulated provider (engine tick loop only — never used in backtest) ──────
 
 class SimulatedMarketDataProvider(BaseMarketDataProvider):
-    """Used only by the live engine tick loop when no Kite session exists."""
+    """Disabled and deprecated to enforce live broker data only."""
+
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("SimulatedMarketDataProvider is disabled to enforce live broker data only.")
+
+    def get_historical_data(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        raise RuntimeError("SimulatedMarketDataProvider is disabled to enforce live broker data only.")
+
+
+
+class DhanMarketDataProvider(BaseMarketDataProvider):
+    """
+    Real DhanHQ v2 historical F&O data provider.
+    Enables true historical backtests by querying Dhan's high-fidelity charts API.
+    """
+
+    def __init__(self, client_id: str, access_token: str):
+        self.client_id = client_id
+        self.access_token = access_token
+        self._headers = {
+            "Content-Type": "application/json",
+            "access-token": access_token,
+            "client-id": client_id,
+        }
+
+    def _resolve_option_security_id(
+        self,
+        underlying: str,
+        strike: float,
+        option_type: str,
+        expiry_date: str,
+    ) -> Optional[int]:
+        """Query live Dhan Option Chain to retrieve the target F&O contract Security ID."""
+        try:
+            # Map index name to Dhan underlying scrip ID
+            underlying_clean = underlying.split(":")[-1].upper()
+            if "BANK" in underlying_clean:
+                under_id = 25
+            else:
+                under_id = 13  # Default Nifty 50
+
+            # Ensure format is YYYY-MM-DD as strictly expected by Dhan option chain API
+            try:
+                dt_obj = datetime.strptime(expiry_date, "%Y-%m-%d")
+                expiry_date = dt_obj.strftime("%Y-%m-%d")
+            except Exception:
+                # If already in DD-MMM-YYYY or another format, try parsing and converting to YYYY-MM-DD
+                try:
+                    dt_obj = datetime.strptime(expiry_date, "%d-%b-%Y")
+                    expiry_date = dt_obj.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+            cache_key = (under_id, expiry_date)
+            if not hasattr(self, "_option_chain_cache"):
+                self._option_chain_cache = {}
+
+            if cache_key in self._option_chain_cache:
+                chain_list = self._option_chain_cache[cache_key]
+            else:
+                import time
+                time.sleep(1.0)
+                url = "https://api.dhan.co/v2/optionchain"
+                payload = {
+                    "UnderlyingScrip": under_id,
+                    "UnderlyingSeg": "IDX_I",
+                    "Expiry": expiry_date
+                }
+
+                resp = requests.post(url, json=payload, headers=self._headers, timeout=15)
+                if resp.status_code != 200:
+                    logger.warning(f"Dhan Option Chain API failed: {resp.text}")
+                    return None
+
+                data = resp.json()
+                inner_data = data.get("data", {})
+                
+                # Normalize to list of option details
+                chain_list = []
+                if isinstance(inner_data, dict):
+                    oc_dict = inner_data.get("oc", {})
+                    if isinstance(oc_dict, dict):
+                        for strike_str, strike_data in oc_dict.items():
+                            try:
+                                strike_val = float(strike_str)
+                                chain_list.append({
+                                    "strike": strike_val,
+                                    "CE": strike_data.get("ce", {}),
+                                    "PE": strike_data.get("pe", {})
+                                })
+                            except Exception:
+                                pass
+                    else:
+                        # Fallback to check if inner_data itself is a list
+                        chain_list = inner_data if isinstance(inner_data, list) else []
+                elif isinstance(inner_data, list):
+                    chain_list = inner_data
+                
+                if chain_list:
+                    self._option_chain_cache[cache_key] = chain_list
+
+            if not chain_list:
+                logger.warning(f"Dhan Option Chain API returned error or invalid format: {data if 'data' in locals() else 'None'}")
+                return None
+
+            for item in chain_list:
+                # Check target strike
+                strike_diff = abs(float(item.get("strike", 0)) - strike)
+                if strike_diff < 1.0:
+                    # Resolve CE or PE contract ID
+                    opt_details = item.get(option_type.upper()) or item.get(option_type.lower())
+                    if isinstance(opt_details, dict):
+                        sec_id = opt_details.get("securityId") or opt_details.get("security_id")
+                        if sec_id:
+                            return int(sec_id)
+
+        except Exception as e:
+            logger.warning(f"Dhan F&O Security ID resolution failed: {e}")
+        return None
 
     def get_historical_data(
         self,
@@ -334,27 +452,87 @@ class SimulatedMarketDataProvider(BaseMarketDataProvider):
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         interval: str = "day",
+        instrument_type: str = "STOCK",
+        strike_price: Optional[float] = None,
+        expiry_date: Optional[str] = None,
         **kwargs,
     ) -> List[Dict[str, Any]]:
-        import random
-        logger.info(f"[SIM] Generating {days} mock candles for {symbol}")
-        data  = []
-        base  = 22000.0 if "NIFTY" in symbol else (150.0 if "INFY" in symbol else 2500.0)
-        curr  = datetime.now() - timedelta(days=days)
-        random.seed(42)
+        """Fetch high-fidelity OHLCV candles from Dhan charts API."""
+        # 1. Resolve securityId
+        if instrument_type.upper() in ("CE", "PE"):
+            if not expiry_date:
+                raise RuntimeError("expiry_date is strictly required for Dhan options data fetching.")
+            sec_id = self._resolve_option_security_id(symbol, strike_price, instrument_type, expiry_date)
+            if not sec_id:
+                raise RuntimeError(
+                    f"Could not resolve Dhan F&O contract securityId for {symbol} "
+                    f"{strike_price} {instrument_type} expiry={expiry_date}"
+                )
+            segment = "NSE_FNO"
+            inst_param = "OPTIDX"
+        else:
+            # Underlying Index or Equity (Default mapping: Nifty 50 -> 13, Bank Nifty -> 25)
+            underlying_clean = symbol.split(":")[-1].upper()
+            if "BANK" in underlying_clean:
+                sec_id = 25
+            else:
+                sec_id = 13
+            segment = "IDX_I"
+            inst_param = "INDEX"
 
-        for _ in range(days):
-            chg   = random.uniform(-100, 115) if "NIFTY" in symbol else random.uniform(-4, 5)
-            op, cl = base, base + chg
-            data.append({
-                "date":   curr.strftime("%Y-%m-%d"),
-                "open":   round(op, 2),
-                "high":   round(max(op, cl) + random.uniform(5, 45), 2),
-                "low":    round(min(op, cl) - random.uniform(5, 45), 2),
-                "close":  round(cl, 2),
-                "volume": random.randint(100000, 900000),
-            })
-            base  = cl
-            curr += timedelta(days=1)
+        # 2. Build date strings
+        # Dhan takes YYYY-MM-DD
+        fd = from_date.split(" ")[0] if from_date else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        td = to_date.split(" ")[0] if to_date else datetime.now().strftime("%Y-%m-%d")
 
-        return data
+        # 3. Call Dhan Charts API
+        is_intraday = interval != "day"
+        endpoint = "intraday" if is_intraday else "historical"
+        url = f"https://api.dhan.co/v2/charts/{endpoint}"
+
+        payload = {
+            "securityId": str(sec_id),
+            "exchangeSegment": segment,
+            "instrument": inst_param,
+            "expiryCode": 0,
+            "oi": False,
+            "fromDate": fd,
+            "toDate": td
+        }
+
+        try:
+            resp = requests.post(url, json=payload, headers=self._headers, timeout=25)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Dhan Charts API Error {resp.status_code}: {resp.text}")
+
+            body = resp.json()
+            # Format is columnar: {"open": [...], "high": [...], "low": [...], "close": [...], "volume": [...], "timestamp": [...]}
+            if not body or "timestamp" not in body or not body["timestamp"]:
+                raise RuntimeError(f"Dhan Charts API returned empty data: {body}")
+
+            result = []
+            size = len(body["timestamp"])
+            for idx in range(size):
+                ts = body["timestamp"][idx]
+                try:
+                    if ts > 1000000000:
+                        dt = datetime.fromtimestamp(ts)
+                    else:
+                        dt = datetime(1980, 1, 1) + timedelta(seconds=ts)
+                except Exception:
+                    dt = datetime.now()
+
+                result.append({
+                    "date": dt.strftime("%Y-%m-%d %H:%M:%S" if is_intraday else "%Y-%m-%d"),
+                    "open": float(body["open"][idx]),
+                    "high": float(body["high"][idx]),
+                    "low": float(body["low"][idx]),
+                    "close": float(body["close"][idx]),
+                    "volume": int(body.get("volume", [0] * size)[idx]),
+                })
+
+            logger.info(f"Successfully loaded {len(result)} real high-fidelity options candles from Dhan.")
+            return result
+
+        except Exception as e:
+            raise RuntimeError(f"Dhan API historical data call failed: {e}")

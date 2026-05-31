@@ -29,7 +29,7 @@ export default function StockerDashboard() {
   const [isBuildingStrategy, setIsBuildingStrategy] = useState(false);
 
   // Core Data States
-  const [spotPrice, setSpotPrice] = useState(22000.0);
+  const [spotPrice, setSpotPrice] = useState(23909.55);
   const [optionChain, setOptionChain] = useState<OptionChainItem[]>([]);
   const [positions, setPositions] = useState<Trade[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -44,6 +44,8 @@ export default function StockerDashboard() {
   const [kiteApiSecret, setKiteApiSecret] = useState('');
   const [aliceClientId, setAliceClientId] = useState('');
   const [aliceApiKey, setAliceApiKey] = useState('');
+  const [dhanClientId, setDhanClientId] = useState('');
+  const [dhanAccessToken, setDhanAccessToken] = useState('');
   const [activeBroker, setActiveBroker] = useState('kite');
 
   // Broker Portfolio Balance States
@@ -55,6 +57,9 @@ export default function StockerDashboard() {
     collateral_margin: 50000.0,
     available_margin: 430000.0
   });
+
+  // Strategy live running logs
+  const [strategyLogs, setStrategyLogs] = useState<any[]>([]);
 
   // Strategy Builder Workspace States
   const [strategyId, setStrategyId] = useState('');
@@ -152,6 +157,9 @@ export default function StockerDashboard() {
           setSpotPrice(payload.spot_price);
           setOptionChain(payload.option_chain);
           setPositions(payload.positions);
+          if (payload.strategy_logs) {
+            setStrategyLogs(payload.strategy_logs);
+          }
         }
       };
 
@@ -213,6 +221,11 @@ export default function StockerDashboard() {
         if (ab) {
           setAliceClientId(ab.api_key);
           setAliceApiKey(ab.api_secret || '');
+        }
+        const dh = creds.find((c: any) => c.broker_name === 'dhan');
+        if (dh) {
+          setDhanClientId(dh.api_key);
+          setDhanAccessToken(dh.api_secret || '');
         }
 
         const activeCred = creds.find((c: any) => c.broker_name !== 'telegram' && c.active);
@@ -585,7 +598,7 @@ export default function StockerDashboard() {
   };
 
   const resetPaperRecords = async () => {
-    if (!confirm('This will wipe all mock positions, logs, and summaries to restart fresh. Proceed?')) return;
+    if (!confirm('This will wipe all paper positions, logs, and summaries to restart fresh. Proceed?')) return;
     try {
       const res = await fetch(`${API_BASE}/api/paper-reset`, { method: 'POST' });
       if (res.ok) {
@@ -840,6 +853,7 @@ export default function StockerDashboard() {
                 onCreateNewClick={handleCreateNewStrategyClick}
                 onDeleteTemplate={deleteStrategy}
                 onSendTelegramStatus={sendTelegramStatus}
+                strategyLogs={strategyLogs}
               />
 
               {/* Log Board */}
@@ -852,10 +866,28 @@ export default function StockerDashboard() {
                   fontFamily: 'monospace', fontSize: '11px', color: '#10B981', overflowY: 'auto', 
                   maxHeight: '200px', border: '1px solid rgba(255,255,255,0.03)' 
                 }}>
-                  <p style={{ color: 'var(--text-muted)' }}>[SYSTEM BOOT] Stocker active indicator loops loaded.</p>
-                  <p style={{ color: 'var(--text-muted)' }}>[INDICATOR] VWAP calculated dynamically.</p>
-                  {positions.length > 0 && <p className="glow-green">[ENGINE] Entry triggered. Placing weekly {optType} contract.</p>}
-                  <p style={{ color: '#8B5CF6' }}>[WS] Listening to live option tick streams...</p>
+                  {strategyLogs.length === 0 ? (
+                    <>
+                      <p style={{ color: 'var(--text-muted)' }}>[SYSTEM BOOT] Stocker active indicator loops loaded.</p>
+                      <p style={{ color: 'var(--text-muted)' }}>[WS] Connected and listening to live option tick streams...</p>
+                      <p style={{ color: '#8B5CF6' }}>[ENGINE] Waiting for strategy activation to stream live rule evaluation ticks...</p>
+                    </>
+                  ) : (
+                    strategyLogs.slice().reverse().map((log, index) => {
+                      let color = '#F3F4F6';
+                      if (log.message.includes('[TRIGGER]')) color = '#10B981';
+                      else if (log.message.includes('[EVAL]')) color = '#F59E0B';
+                      else if (log.message.includes('[TICK]')) color = '#6B7280';
+                      
+                      return (
+                        <p key={index} style={{ color, marginBottom: '4px', lineHeight: '1.4' }}>
+                          <span style={{ color: '#8B5CF6', marginRight: '6px' }}>[{log.timestamp}]</span>
+                          <span style={{ color: '#6366F1', fontWeight: 600, marginRight: '4px' }}>[{log.strategy_name}]</span>
+                          {log.message}
+                        </p>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </div>
@@ -874,6 +906,7 @@ export default function StockerDashboard() {
               onCreateNewClick={handleCreateNewStrategyClick}
               onDeleteTemplate={deleteStrategy}
               onSendTelegramStatus={sendTelegramStatus}
+              strategyLogs={strategyLogs}
             />
           ) : (
             <CustomBuilder
@@ -945,6 +978,10 @@ export default function StockerDashboard() {
             setAliceClientId={setAliceClientId}
             aliceApiKey={aliceApiKey}
             setAliceApiKey={setAliceApiKey}
+            dhanClientId={dhanClientId}
+            setDhanClientId={setDhanClientId}
+            dhanAccessToken={dhanAccessToken}
+            setDhanAccessToken={setDhanAccessToken}
             onSaveCredentials={saveCredentials}
             onTestTelegram={triggerTestTelegram}
             activeBroker={activeBroker}

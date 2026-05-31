@@ -17,6 +17,10 @@ interface SettingsPageProps {
   setAliceClientId: (val: string) => void;
   aliceApiKey: string;
   setAliceApiKey: (val: string) => void;
+  dhanClientId: string;
+  setDhanClientId: (val: string) => void;
+  dhanAccessToken: string;
+  setDhanAccessToken: (val: string) => void;
   onSaveCredentials: (broker: string, key: string, secret: string) => void;
   onTestTelegram: () => void;
   activeBroker: string;
@@ -30,6 +34,8 @@ export default function SettingsPage({
   kiteApiSecret, setKiteApiSecret,
   aliceClientId, setAliceClientId,
   aliceApiKey, setAliceApiKey,
+  dhanClientId, setDhanClientId,
+  dhanAccessToken, setDhanAccessToken,
   onSaveCredentials, onTestTelegram,
   activeBroker, onSelectActiveBroker
 }: SettingsPageProps) {
@@ -125,6 +131,28 @@ export default function SettingsPage({
                 <div>
                   <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>Alice Blue ANT API 🌐</span>
                   <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>Route trades directly via A3 ANT REST client credentials</p>
+                </div>
+              </label>
+
+              <label 
+                style={{ 
+                  display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', padding: '12px', 
+                  borderRadius: '8px', background: activeBroker === 'dhan' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(0,0,0,0.15)',
+                  border: activeBroker === 'dhan' ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid rgba(255,255,255,0.02)',
+                  transition: '0.2s'
+                }}
+              >
+                <input 
+                  type="radio" 
+                  name="activeBrokerPage" 
+                  value="dhan" 
+                  checked={activeBroker === 'dhan'}
+                  onChange={() => onSelectActiveBroker('dhan')}
+                  style={{ accentColor: '#3B82F6', width: '16px', height: '16px' }}
+                />
+                <div>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>DhanHQ Rolling Options API ⚡</span>
+                  <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>Run backtests and route options orders directly via Dhan API</p>
                 </div>
               </label>
 
@@ -324,6 +352,46 @@ export default function SettingsPage({
               style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
             >
               <Save size={14} /> Store Alice Blue API
+            </button>
+          </div>
+
+          {/* Card: DhanHQ API */}
+          <div className="glass-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <h3 style={{ fontSize: '14px', color: '#3B82F6', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
+              ⚡ Live Broker: DhanHQ Options API
+            </h3>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Client ID</label>
+                <input 
+                  type="text" 
+                  value={dhanClientId} 
+                  onChange={(e) => setDhanClientId(e.target.value)} 
+                  className="input-glass" 
+                  placeholder="Enter Dhan Client ID"
+                  style={{ padding: '10px', fontSize: '12px' }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan JWT Access Token</label>
+                <input 
+                  type="password" 
+                  value={dhanAccessToken} 
+                  onChange={(e) => setDhanAccessToken(e.target.value)} 
+                  className="input-glass" 
+                  placeholder="Enter Dhan Access Token"
+                  style={{ padding: '10px', fontSize: '12px' }}
+                />
+              </div>
+            </div>
+
+            <button 
+              className="btn-primary" 
+              onClick={() => onSaveCredentials('dhan', dhanClientId, dhanAccessToken)} 
+              style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Save size={14} /> Store Dhan API
             </button>
           </div>
 
