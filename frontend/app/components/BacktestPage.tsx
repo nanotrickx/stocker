@@ -1,17 +1,8 @@
 'use client';
-import React, { useState, useEffect } from 'react';
-import dynamic from 'next/dynamic';
-import { ModuleRegistry, AllCommunityModule } from 'ag-charts-community';
+import React, { useState, useEffect, useRef } from 'react';
+import { createChart } from 'lightweight-charts';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
-
-// Register AG Charts modules once at module initialization
-ModuleRegistry.registerModules([AllCommunityModule]);
-
-const AgCharts = dynamic(
-  () => import('ag-charts-react').then((mod) => mod.AgCharts),
-  { ssr: false }
-);
 
 interface Strategy { id: string; name: string; }
 interface JournalEntry { ts: string; action: string; price: number; qty?: number; pnl?: number; reason: string[]; note?: string; capital: number; }
@@ -19,6 +10,96 @@ interface VizBar { ts: string; open: number; high: number; low: number; close: n
 interface SimTrade { symbol: string; instrument_type: string; entry_time: string; exit_time: string; qty: number; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; exit_reason: string; }
 interface Summary { initial_capital: number; final_capital: number; net_pnl: number; total_return_pct: number; total_trades: number; profitable_trades: number; losing_trades: number; win_rate: number; max_drawdown_pct: number; }
 interface BacktestResult { status: string; message?: string; meta?: Record<string, any>; summary: Summary; equity_curve: {date:string;balance:number}[]; visualization: VizBar[]; trades: SimTrade[]; journal: JournalEntry[]; }
+
+function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+
+    const container = chartContainerRef.current;
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: 360,
+      layout: {
+        background: { type: 'solid' as const, color: 'rgba(0, 0, 0, 0.4)' },
+        textColor: '#d1d4dc',
+      },
+      grid: {
+        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
+        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+      },
+    });
+
+    const candlestickSeries = chart.addCandlestickSeries({
+      upColor: '#10B981',
+      downColor: '#EF4444',
+      borderVisible: false,
+      wickUpColor: '#10B981',
+      wickDownColor: '#EF4444',
+    });
+
+    const data = visualization.map(b => {
+      const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+      return {
+        time: epoch,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      };
+    });
+
+    candlestickSeries.setData(data);
+
+    // Add signal markers
+    const markers = visualization
+      .map(b => {
+        if (b.signal === 'BUY') {
+          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+          return {
+            time: epoch,
+            position: 'belowBar' as const,
+            color: '#10B981',
+            shape: 'arrowUp' as const,
+            text: 'BUY',
+          };
+        }
+        if (b.signal === 'SELL') {
+          const epoch = Math.floor(new Date(b.ts.replace(' ', 'T')).getTime() / 1000);
+          return {
+            time: epoch,
+            position: 'aboveBar' as const,
+            color: '#EF4444',
+            shape: 'arrowDown' as const,
+            text: 'SELL',
+          };
+        }
+        return null;
+      })
+      .filter((m): m is Exclude<typeof m, null> => m !== null);
+
+    candlestickSeries.setMarkers(markers);
+    chart.timeScale().fitContent();
+
+    const handleResize = () => {
+      chart.applyOptions({ width: container.clientWidth });
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      chart.remove();
+    };
+  }, [visualization]);
+
+  return <div ref={chartContainerRef} style={{ width: '100%', height: '360px' }} />;
+}
 
 const SYMBOLS = ['NSE:NIFTY 50','NSE:NIFTY BANK','NSE:RELIANCE','NSE:TCS','NSE:INFY','NSE:HDFCBANK','NSE:ICICIBANK','NSE:SBIN','NSE:WIPRO','NSE:BAJFINANCE','NSE:TATAMOTORS'];
 
@@ -489,81 +570,9 @@ export default function BacktestPage() {
               <p style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'14px' }}>
                 {result.visualization.length} bars · Green body = bullish · Red body = bearish · ▲ BUY / ▼ SELL markers indicate signal triggers
               </p>
-              {/* Candlestick chart using ag-charts-react */}
-              <div style={{ height: '360px', width: '100%', marginBottom: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <AgCharts
-                  options={{
-                    data: result.visualization.map(b => ({
-                      time: b.ts.substring(11, 16),
-                      open: b.open,
-                      high: b.high,
-                      low: b.low,
-                      close: b.close,
-                    })),
-                    theme: 'ag-dark',
-                    background: {
-                      fill: 'transparent',
-                    },
-                    padding: {
-                      top: 15,
-                      bottom: 15,
-                      left: 15,
-                      right: 15,
-                    },
-                    series: [
-                      {
-                        type: 'candlestick',
-                        xKey: 'time',
-                        xName: 'Time',
-                        openKey: 'open',
-                        openName: 'Open',
-                        highKey: 'high',
-                        highName: 'High',
-                        lowKey: 'low',
-                        lowName: 'Low',
-                        closeKey: 'close',
-                        closeName: 'Close',
-                        item: {
-                          up: {
-                            fill: '#10B981',
-                            stroke: '#10B981',
-                          },
-                          down: {
-                            fill: '#EF4444',
-                            stroke: '#EF4444',
-                          },
-                        },
-                      },
-                    ],
-                    axes: [
-                      {
-                        type: 'category',
-                        position: 'bottom',
-                        label: {
-                          color: 'rgba(255, 255, 255, 0.5)',
-                          fontSize: 10,
-                        },
-                      },
-                      {
-                        type: 'number',
-                        position: 'right',
-                        label: {
-                          color: 'rgba(255, 255, 255, 0.5)',
-                          fontSize: 10,
-                          formatter: (p) => p.value.toFixed(0),
-                        },
-                        gridLine: {
-                          style: [
-                            {
-                              stroke: 'rgba(255,255,255,0.05)',
-                              lineDash: [3, 3],
-                            },
-                          ],
-                        },
-                      },
-                    ],
-                  }}
-                />
+              {/* Candlestick chart using tradingview lightweight-charts */}
+              <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '16px' }}>
+                <LightweightCandleChart visualization={result.visualization} />
               </div>
               <div style={{ display:'flex', gap:'16px', marginTop:'8px', fontSize:'11px' }}>
                 <span><span style={{ color:'#10B981', fontWeight:700 }}>▲ BUY</span> Entry triggered</span>
