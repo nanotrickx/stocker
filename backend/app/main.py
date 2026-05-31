@@ -63,6 +63,41 @@ async def on_startup():
     asyncio.create_task(broadcast_stream_task())
 
 
+def get_dhan_token(active_cred: BrokerCredential, session: Session) -> Optional[str]:
+    if active_cred.broker_name == "dhan":
+        if active_cred.totp_secret and len(active_cred.totp_secret.strip()) > 4:
+            from datetime import date
+            import time
+            from app.database import now_ist
+            import requests
+            
+            today = now_ist().date()
+            token_date = active_cred.updated_at.date() if active_cred.updated_at else None
+            
+            if not active_cred.access_token or token_date != today:
+                try:
+                    from app.brokers.dhan import get_totp
+                    totp_code = get_totp(active_cred.totp_secret)
+                    if totp_code:
+                        url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={active_cred.api_key}&pin={active_cred.api_secret}&totp={totp_code}"
+                        resp = requests.post(url, timeout=10)
+                        if resp.status_code == 200:
+                            gen_token = resp.json().get("access_token")
+                            if gen_token:
+                                active_cred.access_token = gen_token
+                                active_cred.updated_at = now_ist()
+                                session.add(active_cred)
+                                session.commit()
+                                logger.info("🟢 Programmatically auto-renewed Dhan access token for today.")
+                                return gen_token
+                        else:
+                            logger.error(f"🔴 Auto-renewal of Dhan token failed: {resp.status_code} - {resp.text}")
+                except Exception as e:
+                    logger.error(f"🔴 Error auto-renewing Dhan token: {e}")
+        
+        return active_cred.access_token or active_cred.api_secret
+    return None
+
 def _seed_default_strategies():
     """Create built-in strategy templates if they don't already exist."""
     from app.database import engine as db_eng
@@ -443,7 +478,7 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
 
     token = None
     if active_cred:
-        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+        token = get_dhan_token(active_cred, session) if active_cred.broker_name == "dhan" else active_cred.access_token
 
     if not active_cred or (not token and active_cred.broker_name not in ["paper", "shoonya"]):
         return {
@@ -578,7 +613,7 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
 
     token = None
     if active_cred:
-        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+        token = get_dhan_token(active_cred, session) if active_cred.broker_name == "dhan" else active_cred.access_token
 
     if not active_cred or (not token and active_cred.broker_name not in ["paper", "shoonya"]):
         return {
@@ -1150,12 +1185,16 @@ async def save_credentials(data: CredentialUpdate, session: Session = Depends(ge
         broker_client = engine_instance.broker_clients.get(broker_key)
         if broker_client:
             logger.info(f"Dynamically authenticating {broker_key} with new credentials...")
-            await broker_client.login({
+            success = await broker_client.login({
                 "api_key": data.api_key,
                 "api_secret": data.api_secret,
                 "totp_secret": data.totp_secret,
                 "access_token": cred.access_token
             })
+            if success and data.broker_name == "dhan":
+                cred.access_token = broker_client.access_token
+                session.add(cred)
+                session.commit()
         
     return {"status": "SUCCESS"}
 
@@ -1335,7 +1374,7 @@ def get_market_data_provider(session: Session = Depends(get_session)) -> BaseMar
     ).first()
     
     if active_cred:
-        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
+        token = get_dhan_token(active_cred, session) if active_cred.broker_name == "dhan" else active_cred.access_token
         if token:
             if active_cred.broker_name == "dhan":
                 from app.market_data import DhanMarketDataProvider

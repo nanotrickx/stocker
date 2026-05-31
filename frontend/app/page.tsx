@@ -46,6 +46,7 @@ export default function StockerDashboard() {
   const [aliceApiKey, setAliceApiKey] = useState('');
   const [dhanClientId, setDhanClientId] = useState('');
   const [dhanAccessToken, setDhanAccessToken] = useState('');
+  const [dhanTotpSecret, setDhanTotpSecret] = useState('');
   const [activeBroker, setActiveBroker] = useState('kite');
 
   // Broker Portfolio Balance States
@@ -226,6 +227,7 @@ export default function StockerDashboard() {
         if (dh) {
           setDhanClientId(dh.api_key);
           setDhanAccessToken(dh.api_secret || '');
+          setDhanTotpSecret(dh.totp_secret || '');
         }
 
         const activeCred = creds.find((c: any) => c.broker_name !== 'telegram' && c.active);
@@ -274,7 +276,7 @@ export default function StockerDashboard() {
     }
   };
 
-  const saveCredentials = async (broker: string, key: string, secret: string) => {
+  const saveCredentials = async (broker: string, key: string, secret: string, totpSecret?: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/credentials`, {
         method: 'POST',
@@ -282,7 +284,8 @@ export default function StockerDashboard() {
         body: JSON.stringify({
           broker_name: broker,
           api_key: key,
-          api_secret: secret
+          api_secret: secret,
+          totp_secret: totpSecret
         })
       });
       if (res.ok) {
@@ -982,6 +985,8 @@ export default function StockerDashboard() {
             setDhanClientId={setDhanClientId}
             dhanAccessToken={dhanAccessToken}
             setDhanAccessToken={setDhanAccessToken}
+            dhanTotpSecret={dhanTotpSecret}
+            setDhanTotpSecret={setDhanTotpSecret}
             onSaveCredentials={saveCredentials}
             onTestTelegram={triggerTestTelegram}
             activeBroker={activeBroker}

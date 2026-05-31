@@ -4,6 +4,26 @@ from app.brokers.base import BaseBroker
 
 logger = logging.getLogger("Stocker.Brokers.Dhan")
 
+def get_totp(secret: str) -> str:
+    import time
+    import hmac
+    import hashlib
+    import struct
+    import base64
+    try:
+        secret = secret.replace(" ", "")
+        secret = secret + '=' * ((8 - len(secret) % 8) % 8)
+        key = base64.b32decode(secret, casefold=True)
+        intervals_no = int(time.time() // 30)
+        msg = struct.pack(">Q", intervals_no)
+        h = hmac.new(key, msg, hashlib.sha1).digest()
+        o = h[19] & 15
+        h = (struct.unpack(">I", h[o:o+4])[0] & 0x7fffffff) % 1000000
+        return f"{h:06d}"
+    except Exception as e:
+        logger.error(f"Error generating TOTP in get_totp: {e}")
+        return ""
+
 class DhanBroker(BaseBroker):
     """
     DhanHQ Options API Integration Layer.
@@ -16,7 +36,30 @@ class DhanBroker(BaseBroker):
 
     async def login(self, credentials: Dict[str, Any]) -> bool:
         self.client_id = credentials.get("client_id") or credentials.get("api_key")
-        self.access_token = credentials.get("access_token") or credentials.get("api_secret")
+        self.access_token = credentials.get("access_token")
+        
+        totp_sec = credentials.get("totp_secret")
+        if totp_sec and len(totp_sec.strip()) > 4:
+            totp_code = get_totp(totp_sec)
+            pin_code = credentials.get("api_secret")
+            if totp_code and pin_code:
+                try:
+                    import requests
+                    url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={self.client_id}&pin={pin_code}&totp={totp_code}"
+                    resp = requests.post(url, timeout=15)
+                    if resp.status_code == 200:
+                        gen_token = resp.json().get("access_token")
+                        if gen_token:
+                            self.access_token = gen_token
+                            logger.info("🟢 Automatically generated fresh Dhan Access Token via TOTP!")
+                    else:
+                        logger.error(f"🔴 Dhan token generation failed: {resp.status_code} - {resp.text}")
+                except Exception as e:
+                    logger.error(f"🔴 Error communicating with Dhan Auth server: {e}")
+        
+        if not self.access_token:
+            self.access_token = credentials.get("api_secret")
+            
         if not self.client_id or not self.access_token:
             logger.error("Dhan Client ID or Access Token/API Key is missing in login credentials.")
             return False

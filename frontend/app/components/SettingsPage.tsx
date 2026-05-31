@@ -21,7 +21,9 @@ interface SettingsPageProps {
   setDhanClientId: (val: string) => void;
   dhanAccessToken: string;
   setDhanAccessToken: (val: string) => void;
-  onSaveCredentials: (broker: string, key: string, secret: string) => void;
+  dhanTotpSecret: string;
+  setDhanTotpSecret: (val: string) => void;
+  onSaveCredentials: (broker: string, key: string, secret: string, totpSecret?: string) => void;
   onTestTelegram: () => void;
   activeBroker: string;
   onSelectActiveBroker: (broker: string) => void;
@@ -36,6 +38,7 @@ export default function SettingsPage({
   aliceApiKey, setAliceApiKey,
   dhanClientId, setDhanClientId,
   dhanAccessToken, setDhanAccessToken,
+  dhanTotpSecret, setDhanTotpSecret,
   onSaveCredentials, onTestTelegram,
   activeBroker, onSelectActiveBroker
 }: SettingsPageProps) {
@@ -374,13 +377,24 @@ export default function SettingsPage({
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan API Key / API Secret</label>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Trading PIN / API Secret</label>
                 <input 
                   type="password" 
                   value={dhanAccessToken} 
                   onChange={(e) => setDhanAccessToken(e.target.value)} 
                   className="input-glass" 
-                  placeholder="Enter Dhan Access Token or API Secret"
+                  placeholder="Enter 6-digit Dhan Trading PIN or API Secret"
+                  style={{ padding: '10px', fontSize: '12px' }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan TOTP Secret Key (For 24h Auto-Login)</label>
+                <input 
+                  type="password" 
+                  value={dhanTotpSecret} 
+                  onChange={(e) => setDhanTotpSecret(e.target.value)} 
+                  className="input-glass" 
+                  placeholder="Enter TOTP Secret Key for automatic daily token generation"
                   style={{ padding: '10px', fontSize: '12px' }}
                 />
               </div>
@@ -388,7 +402,7 @@ export default function SettingsPage({
 
             <button 
               className="btn-primary" 
-              onClick={() => onSaveCredentials('dhan', dhanClientId, dhanAccessToken)} 
+              onClick={() => onSaveCredentials('dhan', dhanClientId, dhanAccessToken, dhanTotpSecret)} 
               style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
             >
               <Save size={14} /> Store Dhan API
