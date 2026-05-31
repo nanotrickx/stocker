@@ -1,7 +1,13 @@
 'use client';
 import React, { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
+
+const AgCharts = dynamic(
+  () => import('ag-charts-react').then((mod) => mod.AgCharts),
+  { ssr: false }
+);
 
 interface Strategy { id: string; name: string; }
 interface JournalEntry { ts: string; action: string; price: number; qty?: number; pnl?: number; reason: string[]; note?: string; capital: number; }
@@ -479,60 +485,81 @@ export default function BacktestPage() {
               <p style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'14px' }}>
                 {result.visualization.length} bars · Green body = bullish · Red body = bearish · ▲ BUY / ▼ SELL markers indicate signal triggers
               </p>
-              {/* Candlestick chart */}
-              <div style={{ overflowX:'auto', paddingBottom:'8px' }}>
-                {(() => {
-                  const bars = result.visualization;
-                  const allHigh = Math.max(...bars.map(b=>b.high));
-                  const allLow  = Math.min(...bars.map(b=>b.low));
-                  const range   = allHigh - allLow || 1;
-                  const chartH  = 200;
-                  const toY = (price: number) => chartH - ((price - allLow) / range) * chartH;
-                  const barW = Math.max(6, Math.min(14, Math.floor(800 / bars.length)));
-                  const totalW = bars.length * (barW + 2);
-                  return (
-                    <svg width={totalW} height={chartH + 40} style={{ display:'block', minWidth:'100%' }}>
-                      {/* Price gridlines */}
-                      {[0, 0.25, 0.5, 0.75, 1].map(pct => {
-                        const y = pct * chartH;
-                        const price = allHigh - pct * range;
-                        return <g key={pct}>
-                          <line x1={0} x2={totalW} y1={y} y2={y} stroke="rgba(255,255,255,0.05)" strokeWidth={1} />
-                          <text x={4} y={y - 3} fill="rgba(255,255,255,0.3)" fontSize={9}>{price.toFixed(0)}</text>
-                        </g>;
-                      })}
-                      {bars.map((bar, i) => {
-                        const x = i * (barW + 2) + 1;
-                        const cx = x + barW / 2;
-                        const bullish = bar.close >= bar.open;
-                        const bodyTop = toY(Math.max(bar.open, bar.close));
-                        const bodyBot = toY(Math.min(bar.open, bar.close));
-                        const bodyH   = Math.max(1, bodyBot - bodyTop);
-                        const wickTop = toY(bar.high);
-                        const wickBot = toY(bar.low);
-                        const fill = bar.signal === 'BUY' ? '#10B981' : bar.signal === 'SELL' ? '#EF4444' : (bullish ? 'rgba(16,185,129,0.7)' : 'rgba(239,68,68,0.7)');
-                        const wick  = bullish ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)';
-                        return (
-                          <g key={i}>
-                            {/* Wick */}
-                            <line x1={cx} x2={cx} y1={wickTop} y2={wickBot} stroke={wick} strokeWidth={1} />
-                            {/* Body */}
-                            <rect x={x} y={bodyTop} width={barW} height={bodyH} fill={fill} rx={1} />
-                            {/* Signal arrows */}
-                            {bar.signal === 'BUY'  && <text x={cx} y={bodyTop - 4} textAnchor="middle" fill="#10B981" fontSize={10} fontWeight={900}>▲</text>}
-                            {bar.signal === 'SELL' && <text x={cx} y={bodyTop - 4} textAnchor="middle" fill="#EF4444" fontSize={10} fontWeight={900}>▼</text>}
-                            {/* Time labels every ~10 bars */}
-                            {i % Math.max(1, Math.floor(bars.length / 12)) === 0 && (
-                              <text x={cx} y={chartH + 14} textAnchor="middle" fill="rgba(255,255,255,0.3)" fontSize={8} transform={`rotate(-35,${cx},${chartH+14})`}>
-                                {bar.ts.substring(11) || bar.ts.substring(5,10)}
-                              </text>
-                            )}
-                          </g>
-                        );
-                      })}
-                    </svg>
-                  );
-                })()}
+              {/* Candlestick chart using ag-charts-react */}
+              <div style={{ height: '360px', width: '100%', marginBottom: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <AgCharts
+                  options={{
+                    data: result.visualization.map(b => ({
+                      time: b.ts.substring(11, 16),
+                      open: b.open,
+                      high: b.high,
+                      low: b.low,
+                      close: b.close,
+                    })),
+                    theme: 'ag-dark',
+                    background: {
+                      fill: 'transparent',
+                    },
+                    padding: {
+                      top: 15,
+                      bottom: 15,
+                      left: 15,
+                      right: 15,
+                    },
+                    series: [
+                      {
+                        type: 'candlestick',
+                        xKey: 'time',
+                        xName: 'Time',
+                        openKey: 'open',
+                        openName: 'Open',
+                        highKey: 'high',
+                        highName: 'High',
+                        lowKey: 'low',
+                        lowName: 'Low',
+                        closeKey: 'close',
+                        closeName: 'Close',
+                        item: {
+                          up: {
+                            fill: '#10B981',
+                            stroke: '#10B981',
+                          },
+                          down: {
+                            fill: '#EF4444',
+                            stroke: '#EF4444',
+                          },
+                        },
+                      },
+                    ],
+                    axes: [
+                      {
+                        type: 'category',
+                        position: 'bottom',
+                        label: {
+                          color: 'rgba(255, 255, 255, 0.5)',
+                          fontSize: 10,
+                        },
+                      },
+                      {
+                        type: 'number',
+                        position: 'right',
+                        label: {
+                          color: 'rgba(255, 255, 255, 0.5)',
+                          fontSize: 10,
+                          formatter: (p) => p.value.toFixed(0),
+                        },
+                        gridLine: {
+                          style: [
+                            {
+                              stroke: 'rgba(255,255,255,0.05)',
+                              lineDash: [3, 3],
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  }}
+                />
               </div>
               <div style={{ display:'flex', gap:'16px', marginTop:'8px', fontSize:'11px' }}>
                 <span><span style={{ color:'#10B981', fontWeight:700 }}>▲ BUY</span> Entry triggered</span>
