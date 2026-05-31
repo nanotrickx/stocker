@@ -150,15 +150,19 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
 
     const data = visualization.map((b, idx) => {
       const epoch = parseTimestampToUTC(b.ts);
-      const premium = type === 'CE' ? (b.indicators?.ce_premium ?? 0) : (b.indicators?.pe_premium ?? 0);
       
-      const prevBar = idx > 0 ? visualization[idx - 1] : null;
-      const prevPremium = prevBar ? (type === 'CE' ? (prevBar.indicators?.ce_premium ?? premium) : (prevBar.indicators?.pe_premium ?? premium)) : premium;
-      
-      const open = prevPremium || premium || 10;
-      const close = premium || open || 10;
-      const high = Math.max(open, close) + Math.abs(open - close) * 0.25 + 0.5;
-      const low = Math.max(0.5, Math.min(open, close) - Math.abs(open - close) * 0.25 - 0.5);
+      const open = type === 'CE' 
+        ? (b.indicators?.ce_open ?? b.indicators?.ce_premium ?? 10) 
+        : (b.indicators?.pe_open ?? b.indicators?.pe_premium ?? 10);
+      const high = type === 'CE' 
+        ? (b.indicators?.ce_high ?? b.indicators?.ce_premium ?? 10) 
+        : (b.indicators?.pe_high ?? b.indicators?.pe_premium ?? 10);
+      const low = type === 'CE' 
+        ? (b.indicators?.ce_low ?? b.indicators?.ce_premium ?? 10) 
+        : (b.indicators?.pe_low ?? b.indicators?.pe_premium ?? 10);
+      const close = type === 'CE' 
+        ? (b.indicators?.ce_close ?? b.indicators?.ce_premium ?? 10) 
+        : (b.indicators?.pe_close ?? b.indicators?.pe_premium ?? 10);
 
       return {
         time: epoch,
@@ -170,6 +174,38 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
     });
 
     candlestickSeries.setData(data);
+
+    // Add option specific signal markers
+    const markers = visualization
+      .map(b => {
+        const optionType = b.indicators?.selected_option_type;
+        if (optionType !== type) return null;
+
+        if (b.signal === 'BUY') {
+          const epoch = parseTimestampToUTC(b.ts);
+          return {
+            time: epoch,
+            position: 'belowBar' as const,
+            color: '#10B981',
+            shape: 'arrowUp' as const,
+            text: 'BUY',
+          };
+        }
+        if (b.signal === 'SELL') {
+          const epoch = parseTimestampToUTC(b.ts);
+          return {
+            time: epoch,
+            position: 'aboveBar' as const,
+            color: '#EF4444',
+            shape: 'arrowDown' as const,
+            text: 'SELL',
+          };
+        }
+        return null;
+      })
+      .filter((m): m is Exclude<typeof m, null> => m !== null);
+
+    createSeriesMarkers(candlestickSeries, markers);
     chart.timeScale().fitContent();
 
     const handleResize = () => {

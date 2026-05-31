@@ -681,6 +681,28 @@ class ORBStrategyEngine:
                     else:
                         current_ce_premium = round(max(0.5, max(0, row["close"] - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
 
+                    # Store CE candle OHLC
+                    ce_open = current_ce_premium
+                    ce_high = current_ce_premium
+                    ce_low = current_ce_premium
+                    ce_close = current_ce_premium
+                    if api_ce_candle:
+                        ce_open = api_ce_candle.get("open", current_ce_premium)
+                        ce_high = api_ce_candle.get("high", current_ce_premium)
+                        ce_low = api_ce_candle.get("low", current_ce_premium)
+                        ce_close = api_ce_candle.get("close", current_ce_premium)
+                    elif len(visualization) > 0:
+                        prev_val = visualization[-1]["indicators"].get("ce_close", current_ce_premium)
+                        ce_open = prev_val
+                        ce_close = current_ce_premium
+                        ce_high = max(ce_open, ce_close) + abs(ce_open - ce_close) * 0.25 + 0.5
+                        ce_low = max(0.5, min(ce_open, ce_close) - abs(ce_open - ce_close) * 0.25 - 0.5)
+
+                    indicators["ce_open"] = ce_open
+                    indicators["ce_high"] = ce_high
+                    indicators["ce_low"] = ce_low
+                    indicators["ce_close"] = ce_close
+
                 if state.selected_pe_strike is not None:
                     real_pe_prem = None
                     api_pe_candle = pe_price_map.get(bar_min_str)
@@ -695,9 +717,32 @@ class ORBStrategyEngine:
                     else:
                         current_pe_premium = round(max(0.5, max(0, state.selected_pe_strike - row["close"]) + state.selected_pe_strike * 0.002), 2)
 
+                    # Store PE candle OHLC
+                    pe_open = current_pe_premium
+                    pe_high = current_pe_premium
+                    pe_low = current_pe_premium
+                    pe_close = current_pe_premium
+                    if api_pe_candle:
+                        pe_open = api_pe_candle.get("open", current_pe_premium)
+                        pe_high = api_pe_candle.get("high", current_pe_premium)
+                        pe_low = api_pe_candle.get("low", current_pe_premium)
+                        pe_close = api_pe_candle.get("close", current_pe_premium)
+                    elif len(visualization) > 0:
+                        prev_val = visualization[-1]["indicators"].get("pe_close", current_pe_premium)
+                        pe_open = prev_val
+                        pe_close = current_pe_premium
+                        pe_high = max(pe_open, pe_close) + abs(pe_open - pe_close) * 0.25 + 0.5
+                        pe_low = max(0.5, min(pe_open, pe_close) - abs(pe_open - pe_close) * 0.25 - 0.5)
+
+                    indicators["pe_open"] = pe_open
+                    indicators["pe_high"] = pe_high
+                    indicators["pe_low"] = pe_low
+                    indicators["pe_close"] = pe_close
+
                 if state.selected_ce_strike is not None:
                     indicators["ce_premium"] = current_ce_premium
                     indicators["pe_premium"] = current_pe_premium
+                    indicators["selected_option_type"] = state.selected_option_type
 
                 visualization.append({
                     "ts": ts,
