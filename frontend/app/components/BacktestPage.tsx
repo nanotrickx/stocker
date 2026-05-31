@@ -542,7 +542,7 @@ export default function BacktestPage() {
               </div>
 
               {/* Option Premiums Chart */}
-              {bars[0]?.indicators?.ce_premium !== undefined && (
+              {result.visualization[0]?.indicators?.ce_premium !== undefined && (
                 <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '20px' }}>
                   <h4 style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <Activity size={15} style={{ color: '#6366F1' }} /> Option Premium Series (ATM CE & PE Strikes)
@@ -553,6 +553,7 @@ export default function BacktestPage() {
                   
                   <div style={{ overflowX: 'auto', paddingBottom: '8px' }}>
                     {(() => {
+                      const bars = result.visualization;
                       const cePrems = bars.map(b => b.indicators?.ce_premium ?? 0);
                       const pePrems = bars.map(b => b.indicators?.pe_premium ?? 0);
                       const maxPrem = Math.max(...cePrems, ...pePrems, 10);
