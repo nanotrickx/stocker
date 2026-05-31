@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
-import { createChart, CandlestickSeries } from 'lightweight-charts';
+import { createChart, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
 
@@ -83,7 +83,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
       })
       .filter((m): m is Exclude<typeof m, null> => m !== null);
 
-    candlestickSeries.setMarkers(markers);
+    createSeriesMarkers(candlestickSeries, markers);
     chart.timeScale().fitContent();
 
     const handleResize = () => {
