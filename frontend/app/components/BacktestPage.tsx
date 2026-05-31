@@ -1,15 +1,15 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
-import { createChart, CandlestickSeries, createSeriesMarkers, UTCTimestamp } from 'lightweight-charts';
+import { createChart, CandlestickSeries, createSeriesMarkers, UTCTimestamp, ColorType } from 'lightweight-charts';
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
 
 interface Strategy { id: string; name: string; }
 interface JournalEntry { ts: string; action: string; price: number; qty?: number; pnl?: number; reason: string[]; note?: string; capital: number; }
-interface VizBar { ts: string; open: number; high: number; low: number; close: number; volume: number; signal: string; trade_state: string; indicators: Record<string, number | null>; }
+interface VizBar { ts: string; open: number; high: number; low: number; close: number; volume: number; signal: string; trade_state: string; indicators: Record<string, any>; }
 interface SimTrade { symbol: string; instrument_type: string; entry_time: string; exit_time: string; qty: number; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; exit_reason: string; }
 interface Summary { initial_capital: number; final_capital: number; net_pnl: number; total_return_pct: number; total_trades: number; profitable_trades: number; losing_trades: number; win_rate: number; max_drawdown_pct: number; }
-interface BacktestResult { status: string; message?: string; meta?: Record<string, any>; summary: Summary; equity_curve: {date:string;balance:number}[]; visualization: VizBar[]; trades: SimTrade[]; journal: JournalEntry[]; }
+interface BacktestResult { status: string; message?: string; meta?: Record<string, any>; summary: Summary; equity_curve: {date:string;balance:number}[]; visualization: VizBar[]; trades: SimTrade[]; journal: JournalEntry[]; logs?: string[]; }
 
 function parseTimestampToUTC(tsStr: string): UTCTimestamp {
   const clean = tsStr.replace('T', ' ').replace(/\.\d+$/, '');
@@ -28,6 +28,7 @@ function parseTimestampToUTC(tsStr: string): UTCTimestamp {
 
 function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -37,7 +38,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
       width: container.clientWidth,
       height: 360,
       layout: {
-        background: { type: 'solid' as const, color: 'rgba(0, 0, 0, 0.4)' },
+        background: { type: ColorType.Solid, color: 'rgba(0, 0, 0, 0.4)' },
         textColor: '#d1d4dc',
       },
       grid: {
@@ -49,6 +50,8 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
         secondsVisible: false,
       },
     });
+
+    chartRef.current = chart;
 
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981',
@@ -110,14 +113,64 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     return () => {
       window.removeEventListener('resize', handleResize);
       chart.remove();
+      chartRef.current = null;
     };
   }, [visualization]);
 
-  return <div ref={chartContainerRef} style={{ width: '100%', height: '360px' }} />;
+  const handleDownload = () => {
+    if (!chartRef.current) return;
+    const canvas = chartRef.current.takeScreenshot();
+    const dataUrl = canvas.toDataURL('image/jpeg');
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `spot_chart_${Date.now()}.jpeg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '360px' }}>
+      <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
+      <button
+        onClick={handleDownload}
+        title="Share Chart as JPEG"
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          zIndex: 10,
+          background: 'rgba(255, 255, 255, 0.08)',
+          border: '1px solid rgba(255, 255, 255, 0.15)',
+          borderRadius: '6px',
+          padding: '6px 10px',
+          fontSize: '11px',
+          color: '#fff',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          backdropFilter: 'blur(4px)',
+          transition: 'all 0.2s',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+        }}
+      >
+        📷 Share JPEG
+      </button>
+    </div>
+  );
 }
 
 function LightweightOptionChart({ visualization, type }: { visualization: VizBar[], type: 'CE' | 'PE' }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -127,7 +180,7 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
       width: container.clientWidth,
       height: 260,
       layout: {
-        background: { type: 'solid' as const, color: 'rgba(0, 0, 0, 0.4)' },
+        background: { type: ColorType.Solid, color: 'rgba(0, 0, 0, 0.4)' },
         textColor: '#d1d4dc',
       },
       grid: {
@@ -139,6 +192,8 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
         secondsVisible: false,
       },
     });
+
+    chartRef.current = chart;
 
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: type === 'CE' ? '#60A5FA' : '#FB923C', // Gorgeous Blue for CE, Orange for PE!
@@ -217,10 +272,59 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
     return () => {
       window.removeEventListener('resize', handleResize);
       chart.remove();
+      chartRef.current = null;
     };
   }, [visualization, type]);
 
-  return <div ref={chartContainerRef} style={{ width: '100%', height: '260px' }} />;
+  const handleDownload = () => {
+    if (!chartRef.current) return;
+    const canvas = chartRef.current.takeScreenshot();
+    const dataUrl = canvas.toDataURL('image/jpeg');
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `option_chart_${type}_${Date.now()}.jpeg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '260px' }}>
+      <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
+      <button
+        onClick={handleDownload}
+        title="Share Option Chart as JPEG"
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          zIndex: 10,
+          background: 'rgba(255, 255, 255, 0.08)',
+          border: '1px solid rgba(255, 255, 255, 0.15)',
+          borderRadius: '6px',
+          padding: '6px 10px',
+          fontSize: '11px',
+          color: '#fff',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          backdropFilter: 'blur(4px)',
+          transition: 'all 0.2s',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+        }}
+      >
+        📷 Share JPEG
+      </button>
+    </div>
+  );
 }
 
 const SYMBOLS = ['NSE:NIFTY 50','NSE:NIFTY BANK','NSE:RELIANCE','NSE:TCS','NSE:INFY','NSE:HDFCBANK','NSE:ICICIBANK','NSE:SBIN','NSE:WIPRO','NSE:BAJFINANCE','NSE:TATAMOTORS'];
@@ -242,7 +346,7 @@ export default function BacktestPage() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<'chart'|'viz'|'trades'|'journal'>('chart');
+  const [activeSection, setActiveSection] = useState<'chart'|'viz'|'trades'|'journal'|'logs'>('chart');
   const [expandedJournal, setExpandedJournal] = useState<number | null>(null);
   const [optionChartType, setOptionChartType] = useState<'CE' | 'PE'>('CE');
 
@@ -682,17 +786,49 @@ export default function BacktestPage() {
                 {s==='viz'?'📊 Signal Overlay':s==='trades'?'💼 Trade Ledger':'📓 Trade Journal'}
               </button>
             ))}
+            {result.logs && (
+              <button onClick={()=>setActiveSection('logs')} className={activeSection==='logs'?'btn-primary':'btn-glass'}
+                style={{ padding:'8px 18px', borderRadius:'6px', fontSize:'12px', fontWeight:600 }}>
+                💻 System Logs
+              </button>
+            )}
           </div>
 
           {/* Intraday Candlestick Chart */}
           {activeSection==='chart' && result.meta?.is_intraday && (
             <div className="glass-card" style={{ padding:'20px' }}>
-              <h3 style={{ fontSize:'13px', fontWeight:700, marginBottom:'4px', display:'flex', alignItems:'center', gap:'8px' }}>
-                📈 {result.meta.symbol} — {result.meta.interval} candles on {result.meta.from?.substring(0,10)}
-              </h3>
-              <p style={{ fontSize:'11px', color:'var(--text-muted)', marginBottom:'14px' }}>
-                {result.visualization.length} bars · Green body = bullish · Red body = bearish · ▲ BUY / ▼ SELL markers indicate signal triggers
-              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
+                <div>
+                  <h3 style={{ fontSize:'13px', fontWeight:700, marginBottom:'4px', display:'flex', alignItems:'center', gap:'8px' }}>
+                    📈 {result.meta.symbol} — {result.meta.interval} candles on {result.meta.from?.substring(0,10)}
+                  </h3>
+                  <p style={{ fontSize:'11px', color:'var(--text-muted)' }}>
+                    {result.visualization.length} bars · Green body = bullish · Red body = bearish · ▲ BUY / ▼ SELL markers indicate signal triggers
+                  </p>
+                </div>
+                
+                {/* Strike / Option Chain Resolution badging */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {result.meta?.selected_ce_strike && (
+                    <div style={{ display: 'flex', flexDirection: 'column', background: 'rgba(96, 165, 250, 0.08)', border: '1px solid rgba(96, 165, 250, 0.2)', padding: '5px 12px', borderRadius: '6px' }}>
+                      <span style={{ fontSize: '9px', color: 'rgba(96, 165, 250, 0.7)', fontWeight: 600, textTransform: 'uppercase' }}>Selected CE Strike</span>
+                      <span style={{ fontSize: '12px', color: '#60A5FA', fontWeight: 800 }}>{result.meta.symbol.split(':')[1] || 'NIFTY'} CE {result.meta.selected_ce_strike}</span>
+                    </div>
+                  )}
+                  {result.meta?.selected_pe_strike && (
+                    <div style={{ display: 'flex', flexDirection: 'column', background: 'rgba(251, 146, 60, 0.08)', border: '1px solid rgba(251, 146, 60, 0.2)', padding: '5px 12px', borderRadius: '6px' }}>
+                      <span style={{ fontSize: '9px', color: 'rgba(251, 146, 60, 0.7)', fontWeight: 600, textTransform: 'uppercase' }}>Selected PE Strike</span>
+                      <span style={{ fontSize: '12px', color: '#FB923C', fontWeight: 800 }}>{result.meta.symbol.split(':')[1] || 'NIFTY'} PE {result.meta.selected_pe_strike}</span>
+                    </div>
+                  )}
+                  {result.meta?.expiry_date && (
+                    <div style={{ display: 'flex', flexDirection: 'column', background: 'rgba(168, 85, 247, 0.08)', border: '1px solid rgba(168, 85, 247, 0.2)', padding: '5px 12px', borderRadius: '6px' }}>
+                      <span style={{ fontSize: '9px', color: 'rgba(168, 85, 247, 0.7)', fontWeight: 600, textTransform: 'uppercase' }}>Option Expiry</span>
+                      <span style={{ fontSize: '12px', color: '#C084FC', fontWeight: 800 }}>{result.meta.expiry_date}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
               {/* Candlestick chart using tradingview lightweight-charts */}
               <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '16px' }}>
                 <LightweightCandleChart visualization={result.visualization} />
@@ -871,6 +1007,39 @@ export default function BacktestPage() {
                   )}
                 </div>
               ))}
+            </div>
+          )}
+          {/* System Logs */}
+          {activeSection==='logs' && (
+            <div className="glass-card" style={{ padding:'18px', display:'flex', flexDirection:'column', gap:'8px' }}>
+              <p style={{ fontSize:'12px', color:'var(--text-muted)', marginBottom:'4px' }}>Intraday execution logs from the backtest engine including API resolutions and candle loads.</p>
+              {!result.logs || result.logs.length===0 ? (
+                <div style={{ textAlign:'center', padding:'40px', color:'var(--text-muted)', fontSize:'13px' }}>No execution logs generated.</div>
+              ) : (
+                <div style={{
+                  background: '#0c0f17',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: '6px',
+                  padding: '14px',
+                  maxHeight: '400px',
+                  overflowY: 'auto',
+                  fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace',
+                  fontSize: '11px',
+                  lineHeight: '1.6',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}>
+                  {result.logs.map((log, i) => {
+                    const isWarning = log.includes('WARNING');
+                    return (
+                      <div key={i} style={{ color: isWarning ? '#F59E0B' : '#a1a1aa' }}>
+                        {log}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 

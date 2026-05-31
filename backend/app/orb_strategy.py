@@ -220,6 +220,15 @@ class ORBStrategyEngine:
         visualization = []
         trades = []
         journal = []
+        logs = []
+
+        def log_info(msg: str):
+            logger.info(msg)
+            logs.append(f"🟢 INFO | {msg}")
+
+        def log_warn(msg: str):
+            logger.warning(msg)
+            logs.append(f"⚠️ WARNING | {msg}")
 
         # Group candles by date to process each trading day independently
         df = df.copy()
@@ -282,7 +291,7 @@ class ORBStrategyEngine:
                         thursday_str = thursday.strftime("%Y-%m-%d")
                         
                         # Check which candidate resolves to an actual F&O contract ID
-                        logger.info(f"Checking weekly option expiry candidates for {day_str}: Tuesday={tuesday_str}, Thursday={thursday_str}")
+                        log_info(f"Checking weekly option expiry candidates for {day_str}: Tuesday={tuesday_str}, Thursday={thursday_str}")
                         sec_id_test = None
                         if hasattr(provider, "_resolve_option_security_id"):
                             try:
@@ -292,12 +301,12 @@ class ORBStrategyEngine:
                         
                         if sec_id_test:
                             resolved_expiry = tuesday_str
-                            logger.info(f"Dynamically resolved weekly expiry date as Tuesday: {resolved_expiry}")
+                            log_info(f"Dynamically resolved weekly expiry date as Tuesday: {resolved_expiry}")
                         else:
                             resolved_expiry = thursday_str
-                            logger.info(f"Dynamically resolved weekly expiry date as Thursday: {resolved_expiry}")
+                            log_info(f"Dynamically resolved weekly expiry date as Thursday: {resolved_expiry}")
                         
-                    logger.info(f"API Pre-fetch Options for {day_str}: ATM Strike={selected_ce_strike}, Expiry={resolved_expiry}")
+                    log_info(f"API Pre-fetch Options for {day_str}: ATM Strike={selected_ce_strike}, Expiry={resolved_expiry}")
                     
                     # Fetch CE candles
                     try:
@@ -319,9 +328,9 @@ class ORBStrategyEngine:
                                 except Exception:
                                     pass
                             api_data_source = True
-                            logger.info(f"Loaded {len(ce_price_map)} actual CE option candles from Dhan/Kite API.")
+                            log_info(f"Loaded {len(ce_price_map)} actual CE option candles from Dhan/Kite API.")
                     except Exception as ce_err:
-                        logger.warning(f"Failed to fetch actual CE option candles from API: {ce_err}")
+                        log_warn(f"Failed to fetch actual CE option candles from API: {ce_err}")
                         
                     # Fetch PE candles
                     try:
@@ -343,14 +352,14 @@ class ORBStrategyEngine:
                                 except Exception:
                                     pass
                             api_data_source = True
-                            logger.info(f"Loaded {len(pe_price_map)} actual PE option candles from Dhan/Kite API.")
+                            log_info(f"Loaded {len(pe_price_map)} actual PE option candles from Dhan/Kite API.")
                     except Exception as pe_err:
-                        logger.warning(f"Failed to fetch actual PE option candles from API: {pe_err}")
+                        log_warn(f"Failed to fetch actual PE option candles from API: {pe_err}")
                 except Exception as prefetch_err:
-                    logger.warning(f"Options prefetch setup error: {prefetch_err}")
+                    log_warn(f"Options prefetch setup error: {prefetch_err}")
             # Ensure option premium pricing is available. If not, fallback to high-fidelity mathematical simulation mode!
             if not api_data_source and not stored_snapshots:
-                logger.warning(
+                log_warn(
                     f"Actual F&O option candles for {symbol} are not available from either the live broker API "
                     f"or real recorded backup snapshots on {day_str}. Falling back to high-fidelity mathematical simulation."
                 )
@@ -786,6 +795,9 @@ class ORBStrategyEngine:
                 "instrument_type": "OPTION",
                 "candles_used": len(df),
                 "is_intraday": True,
+                "selected_ce_strike": state.selected_ce_strike if 'state' in locals() else None,
+                "selected_pe_strike": state.selected_pe_strike if 'state' in locals() else None,
+                "expiry_date": resolved_expiry if 'resolved_expiry' in locals() else None,
             },
             "summary": {
                 "initial_capital": initial_capital,
@@ -802,6 +814,7 @@ class ORBStrategyEngine:
             "visualization": visualization,
             "trades": trades,
             "journal": journal,
+            "logs": logs,
         }
 
     def _empty_result(self, initial_capital: float) -> Dict[str, Any]:
@@ -823,4 +836,5 @@ class ORBStrategyEngine:
             "visualization": [],
             "trades": [],
             "journal": [],
+            "logs": [],
         }
