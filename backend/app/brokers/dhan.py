@@ -42,7 +42,8 @@ def get_dhan_token(active_cred: Any, session: Any) -> Optional[str]:
                         url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={active_cred.api_key}&pin={active_cred.api_secret}&totp={totp_code}"
                         resp = requests.post(url, timeout=10)
                         if resp.status_code == 200:
-                            gen_token = resp.json().get("access_token")
+                            res_json = resp.json()
+                            gen_token = res_json.get("accessToken") or res_json.get("access_token")
                             if gen_token:
                                 active_cred.access_token = gen_token
                                 active_cred.updated_at = now_ist()
@@ -50,6 +51,8 @@ def get_dhan_token(active_cred: Any, session: Any) -> Optional[str]:
                                 session.commit()
                                 logger.info("🟢 Programmatically auto-renewed Dhan access token for today.")
                                 return gen_token
+                            else:
+                                logger.error(f"🔴 Auto-renewal of Dhan token failed: Server returned error message: {res_json.get('message') or res_json}")
                         else:
                             logger.error(f"🔴 Auto-renewal of Dhan token failed: {resp.status_code} - {resp.text}")
                 except Exception as e:
@@ -82,10 +85,13 @@ class DhanBroker(BaseBroker):
                     url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={self.client_id}&pin={pin_code}&totp={totp_code}"
                     resp = requests.post(url, timeout=15)
                     if resp.status_code == 200:
-                        gen_token = resp.json().get("access_token")
+                        res_json = resp.json()
+                        gen_token = res_json.get("accessToken") or res_json.get("access_token")
                         if gen_token:
                             self.access_token = gen_token
                             logger.info("🟢 Automatically generated fresh Dhan Access Token via TOTP!")
+                        else:
+                            logger.error(f"🔴 Dhan token generation failed: Server returned error message: {res_json.get('message') or res_json}")
                     else:
                         logger.error(f"🔴 Dhan token generation failed: {resp.status_code} - {resp.text}")
                 except Exception as e:

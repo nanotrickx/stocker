@@ -132,10 +132,11 @@ async def broadcast_stream_task():
                             elif active_cred.broker_name == "dhan":
                                 from app.market_data import DhanMarketDataProvider
                                 provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=token)
+                                from_dt = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
                                 candles = provider.get_historical_data(
                                     symbol="NSE:NIFTY 50",
-                                    days=1,
-                                    from_date=datetime.now().strftime("%Y-%m-%d"),
+                                    days=3,
+                                    from_date=from_dt,
                                     to_date=datetime.now().strftime("%Y-%m-%d"),
                                     interval="minute"
                                 )
@@ -143,7 +144,7 @@ async def broadcast_stream_task():
                                     spot = float(candles[-1]["close"])
                                     used_real_data = True
             except Exception as e:
-                logger.error(f"Error fetching live broker spot: {e}")
+                logger.warning(f"Live broker spot fetch unavailable, using simulated/fallback spot: {e}")
                 
             # Dynamic strikes automatically centered around live spot price (NIFTY 50-strike intervals)
             atm_strike = int(round(spot / 50.0) * 50)
@@ -975,6 +976,7 @@ async def send_ledger_telegram_report(
             f"📥 <b>Entry Price:</b> ₹{t.entry_price:.2f}\n"
             f"📤 <b>Exit Price:</b> {exit_p}{reason_tag}\n"
             f"📦 <b>Quantity:</b> {t.quantity}\n"
+            f"💵 <b>Lot Value:</b> ₹{(t.entry_price * (t.quantity or 0)):,.2f}\n"
             f"💰 <b>Trade P&L:</b> <b>{pnl_marker}₹{pnl_val:,.2f}</b>{ret_tag}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 <b>Entry Time (IST):</b> {entry_t_str}\n"
@@ -1092,12 +1094,17 @@ async def send_backtest_telegram_report(payload: TelegramBacktestReportRequest):
                     f"     • CE {ce_s_str} Open High: ₹{ce_h:.2f} | PE {pe_s_str} Open High: ₹{pe_h:.2f}\n"
                 )
             
+            qty = t.get('quantity') or 0
+            lot_value = qty * entry_p
+            gain_pct = (t_pnl / lot_value * 100) if lot_value > 0 else 0.0
+
             msg += (
                 f"{idx}. <b>{t.get('symbol', 'Trade')}{opt_str}</b>\n"
                 f"   • <code>Entry: ₹{entry_p:.2f} ({entry_time})</code>\n"
                 f"   • <code>Exit:  ₹{exit_p:.2f} ({exit_time}){exit_reason}</code>\n"
                 f"{details_str}"
-                f"   • P&L: <b>{t_pnl_marker}₹{t_pnl:,.2f}</b> | Qty: {t.get('quantity')}\n\n"
+                f"   • <code>Lot Value: ₹{lot_value:,.2f} | Gain: {gain_pct:.2f}%</code>\n"
+                f"   • P&L: <b>{t_pnl_marker}₹{t_pnl:,.2f}</b> | Qty: {qty}\n\n"
             )
             
         if len(payload.trades) > 10:
@@ -1127,9 +1134,20 @@ async def save_credentials(data: CredentialUpdate, session: Session = Depends(ge
     if not cred:
         cred = BrokerCredential(broker_name=data.broker_name, api_key="", api_secret="")
     
-    cred.api_key = data.api_key
-    cred.api_secret = data.api_secret
-    cred.totp_secret = data.totp_secret
+    # 1. API Key handling (prevent saving masked version)
+    if data.api_key and "*" in data.api_key:
+        if not cred.api_key:
+            cred.api_key = data.api_key
+    elif data.api_key:
+        cred.api_key = data.api_key
+
+    # 2. API Secret handling (prevent wiping out with empty/masked values)
+    if data.api_secret and "*" not in data.api_secret:
+        cred.api_secret = data.api_secret
+
+    # 3. TOTP Secret handling
+    if data.totp_secret and "*" not in data.totp_secret:
+        cred.totp_secret = data.totp_secret
     
     if data.broker_name != "telegram":
         cred.active = True
@@ -1166,8 +1184,8 @@ async def save_credentials(data: CredentialUpdate, session: Session = Depends(ge
     return {"status": "SUCCESS"}
 
 @app.post("/api/credentials/select-active")
-def select_active_broker(broker_name: str, session: Session = Depends(get_session)):
-    if broker_name not in ["kite", "aliceblue"]:
+async def select_active_broker(broker_name: str, session: Session = Depends(get_session)):
+    if broker_name not in ["kite", "aliceblue", "dhan"]:
         raise HTTPException(status_code=400, detail="Invalid broker selection")
     
     selected_cred = session.exec(select(BrokerCredential).where(BrokerCredential.broker_name == broker_name)).first()
@@ -1178,11 +1196,14 @@ def select_active_broker(broker_name: str, session: Session = Depends(get_sessio
         selected_cred.active = True
         session.add(selected_cred)
         
-    other_name = "aliceblue" if broker_name == "kite" else "kite"
-    other_cred = session.exec(select(BrokerCredential).where(BrokerCredential.broker_name == other_name)).first()
-    if other_cred:
-        other_cred.active = False
-        session.add(other_cred)
+    # Deactivate all other brokers
+    other_creds = session.exec(select(BrokerCredential).where(
+        BrokerCredential.broker_name != broker_name,
+        BrokerCredential.broker_name != "telegram"
+    )).all()
+    for o_cred in other_creds:
+        o_cred.active = False
+        session.add(o_cred)
         
     session.commit()
     logger.info(f"Dynamically switched active Live Trading Broker to: {broker_name}")
@@ -1200,6 +1221,7 @@ def select_active_broker(broker_name: str, session: Session = Depends(get_sessio
         }))
         
     return {"status": "SUCCESS", "active_broker": broker_name}
+
 
 class ZerodhaLoginRequest(BaseModel):
     request_token: str
@@ -1354,14 +1376,56 @@ def get_market_data_provider(session: Session = Depends(get_session)) -> BaseMar
                 
     raise RuntimeError("No active live broker session found. Please login via Settings.")
 
-# Historical Data API for Charts using Dependency Injection
+def _generate_mock_historical_candles(symbol: str, days: int) -> list:
+    import random
+    from datetime import datetime, timedelta
+    
+    underlying = symbol.split(":")[-1].upper()
+    if "BANK" in underlying:
+        base_price = 48500.0
+    elif "SENSEX" in underlying:
+        base_price = 78000.0
+    else:
+        base_price = 23909.55
+        
+    result = []
+    current_time = datetime.now() - timedelta(days=days)
+    price = base_price - (days * 15)
+    
+    for i in range(days + 1):
+        if current_time.weekday() < 5:
+            change = random.normalvariate(15, 120)
+            open_price = price
+            close_price = price + change
+            high_price = max(open_price, close_price) + abs(random.normalvariate(20, 30))
+            low_price = min(open_price, close_price) - abs(random.normalvariate(20, 30))
+            volume = int(random.normalvariate(250000, 50000))
+            
+            result.append({
+                "date": current_time.strftime("%Y-%m-%d"),
+                "open": round(open_price, 2),
+                "high": round(high_price, 2),
+                "low": round(low_price, 2),
+                "close": round(close_price, 2),
+                "volume": max(10000, volume)
+            })
+            price = close_price
+        current_time += timedelta(days=1)
+    return result
+
+# Historical Data API for Charts with graceful mock fallback
 @app.get("/api/historical-data")
 def get_historical_data(
     symbol: str = "NSE:NIFTY 50", 
     days: int = 30, 
-    provider: BaseMarketDataProvider = Depends(get_market_data_provider)
+    session: Session = Depends(get_session)
 ):
-    return provider.get_historical_data(symbol, days)
+    try:
+        provider = get_market_data_provider(session)
+        return provider.get_historical_data(symbol, days)
+    except Exception as e:
+        logger.warning(f"Failed to fetch real historical data for {symbol}, falling back to mock: {e}")
+        return _generate_mock_historical_candles(symbol, days)
 
 # WebSocket handler
 @app.websocket("/api/ws")

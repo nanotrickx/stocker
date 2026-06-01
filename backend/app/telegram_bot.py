@@ -122,9 +122,13 @@ class TelegramBot:
                                 f"   • PE Option ({state.selected_pe_strike:.0f}) Open High: ₹{state.pe_option_opening_high:.2f}\n"
                             )
 
+                    lot_value = (t.quantity or 0) * (t.entry_price or 0.0)
+                    gain_pct = ((t.pnl or 0.0) / lot_value * 100) if lot_value > 0 else 0.0
+                    
                     msg += (
                         f"{index}. {indicator} <b>{t.symbol}</b> ({t.mode})\n"
                         f"   • Entry: ₹{t.entry_price} ({entry_t_str}) | Exit: ₹{t.exit_price} ({exit_t_str})\n"
+                        f"   • Lot Value: ₹{round(lot_value, 2)} | Gain: {round(gain_pct, 2)}%\n"
                         f"   • P&L: ₹{round(t.pnl or 0.0, 2)} ({t.exit_reason})\n"
                         f"{details_str}"
                     )

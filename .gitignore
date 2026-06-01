@@ -75,3 +75,10 @@ frontend/.env.test.local
 frontend/.env.production.local
 frontend/.env
 !frontend/.env.example
+
+# Ngrok Configuration
+ngrok_stocker.yml
+
+# Local Cache / Downloaded Data
+backend/data/
+

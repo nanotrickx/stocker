@@ -198,6 +198,8 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
                 <th>Entry Time</th>
                 <th>Exit Price</th>
                 <th>Exit Time</th>
+                <th>Lot Value (₹)</th>
+                <th>Gain (%)</th>
                 <th>P&L (₹)</th>
                 <th>Status</th>
                 <th>Execution</th>
@@ -219,6 +221,10 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
                     <td style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{fmtTime(trade.entry_time)}</td>
                     <td>{trade.exit_price ? `₹${trade.exit_price.toFixed(2)}` : '--'}</td>
                     <td style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{fmtTime(trade.exit_time)}</td>
+                    <td style={{ fontWeight: 600 }}>₹{(trade.quantity * trade.entry_price).toFixed(2)}</td>
+                    <td style={{ fontWeight: 700 }} className={isGain ? 'glow-green' : 'glow-red'}>
+                      {trade.pnl ? `${((trade.pnl / (trade.quantity * trade.entry_price)) * 100).toFixed(2)}%` : '--'}
+                    </td>
                     <td style={{ fontWeight: 700 }} className={isGain ? 'glow-green' : 'glow-red'}>
                       {trade.pnl ? `₹${trade.pnl.toFixed(2)}` : '--'}
                     </td>

@@ -941,7 +941,7 @@ export default function BacktestPage() {
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
                     <thead>
                       <tr style={{ borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
-                        {['Entry Time','Exit Time','Symbol','Type','Qty','Buy ₹','Sell ₹','P&L','P&L %','Exit Reason'].map(h=>(
+                        {['Entry Time','Exit Time','Symbol','Type','Qty','Buy ₹','Sell ₹','Lot Value','P&L','P&L %','Exit Reason'].map(h=>(
                           <th key={h} style={{ padding:'10px 12px', textAlign:'left', color:'var(--text-muted)', fontWeight:600, whiteSpace:'nowrap' }}>{h}</th>
                         ))}
                       </tr>
@@ -956,6 +956,7 @@ export default function BacktestPage() {
                           <td style={{ padding:'10px 12px', textAlign:'center' }}>{t.qty}</td>
                           <td style={{ padding:'10px 12px', color:'var(--text-secondary)' }}>₹{t.entry_price.toFixed(2)}</td>
                           <td style={{ padding:'10px 12px', fontWeight:600 }}>₹{t.exit_price.toFixed(2)}</td>
+                          <td style={{ padding:'10px 12px', fontWeight:600, color:'var(--text-secondary)' }}>₹{(t.qty * t.entry_price).toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
                           <td style={{ padding:'10px 12px', fontWeight:700, color:pnlColor(t.pnl) }}>{t.pnl>=0?'+':''}₹{t.pnl.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
                           <td style={{ padding:'10px 12px', color:pnlColor(t.pnl_pct) }}>{t.pnl_pct>=0?'+':''}{t.pnl_pct}%</td>
                           <td style={{ padding:'10px 12px' }}>

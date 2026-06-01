@@ -19,7 +19,8 @@ class ExecutionEngine:
             "PAPER": get_broker("PAPER"),
             "KITE": get_broker("KITE"),
             "SHOONYA": get_broker("SHOONYA"),
-            "ALICEBLUE": get_broker("ALICEBLUE")
+            "ALICEBLUE": get_broker("ALICEBLUE"),
+            "DHAN": get_broker("DHAN")
         }
         self.telegram_bot = None  # Injected later
         self.running = False

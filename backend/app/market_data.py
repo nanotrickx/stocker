@@ -508,7 +508,8 @@ class DhanMarketDataProvider(BaseMarketDataProvider):
             body = resp.json()
             # Format is columnar: {"open": [...], "high": [...], "low": [...], "close": [...], "volume": [...], "timestamp": [...]}
             if not body or "timestamp" not in body or not body["timestamp"]:
-                raise RuntimeError(f"Dhan Charts API returned empty data: {body}")
+                logger.warning(f"Dhan Charts API returned empty data for {symbol} ({fd} to {td})")
+                return []
 
             result = []
             size = len(body["timestamp"])
