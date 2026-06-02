@@ -537,35 +537,9 @@ class ExecutionEngine:
                 logger.error(f"Cannot generate mock candles for active deployed strategy '{strategy.name}'. Only real broker feed is permitted.")
                 return pd.DataFrame()
 
-        # If strict active deployed strategy, refuse to generate mock candles
-        if strategy is not None:
-            logger.error(f"No active Zerodha/Dhan credentials found for deployed strategy '{strategy.name}'. Mock candles disabled.")
-            return pd.DataFrame()
-
-        # Static last day value fallback (no random mock)
-        logger.info(f"Generating static last-day/standard OHLC dataset for symbol: {symbol}")
-        now = now_ist()
-        dates = pd.date_range(end=now, periods=100, freq='min')
-        
-        base_price = 23909.55 if "NIFTY" in symbol else (48560.20 if "BANK" in symbol else 100.0)
-        
-        closes = [base_price for _ in range(100)]
-        opens = [base_price for _ in range(100)]
-        highs = [base_price for _ in range(100)]
-        lows = [base_price for _ in range(100)]
-        volumes = [1000 for _ in range(100)]
-
-        df = pd.DataFrame({
-            "open": opens,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": volumes
-        }, index=dates)
-
-        df = calculate_indicators(df)
-        self.historical_data_cache[symbol] = df
-        return df
+        # Under strict user request: NEVER use mock fallback data! Return empty DataFrame to halt all trading.
+        logger.warning(f"Active broker data feed disconnected or missing credentials for '{symbol}'. Strictly halting trading (empty candle dataset).")
+        return pd.DataFrame()
 
     async def evaluate_strategy_entry(self, strategy: StrategyInstance, last_price: float):
         """Evaluates entry conditions for a strategy if no active positions exist."""
@@ -916,33 +890,44 @@ class ExecutionEngine:
         return None
 
     async def fetch_live_spot(self, symbol: str, strategy: Optional[StrategyInstance] = None) -> float:
-        """Fetch real-time LTP from Zerodha. Falls back to mock if unavailable and NOT in strict paper/live trading."""
+        """
+        Fetch real-time LTP from the active broker (Dhan or Zerodha).
+        Strictly halts trading (returns 0.0) if broker is disconnected or quote is not found.
+        """
         try:
-            kite = self._get_kite_client()
-            if kite:
-                loop = asyncio.get_event_loop()
-                ltp_key = symbol if ":" in symbol else f"NSE:{symbol}"
-                ltp_res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
-                if ltp_res and ltp_key in ltp_res:
-                    return float(ltp_res[ltp_key]["last_price"])
+            with Session(db_engine) as session:
+                active_cred = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name != "telegram",
+                    BrokerCredential.active == True
+                )).first()
+
+            if active_cred:
+                broker_name = active_cred.broker_name.upper()
+                if broker_name == "DHAN":
+                    dhan_broker = self.broker_clients.get("DHAN")
+                    if dhan_broker and dhan_broker.access_token:
+                        val = await dhan_broker.get_ltp(symbol)
+                        return float(val)
+                elif broker_name == "KITE":
+                    kite = self._get_kite_client()
+                    if kite:
+                        loop = asyncio.get_event_loop()
+                        ltp_key = symbol if ":" in symbol else f"NSE:{symbol}"
+                        ltp_res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
+                        if ltp_res and ltp_key in ltp_res:
+                            return float(ltp_res[ltp_key]["last_price"])
         except Exception as e:
-            logger.debug(f"LTP fetch failed for {symbol}: {e}")
-            self._kite_client = None  # reset so next tick retries auth
+            logger.error(f"LTP fetch failed for active broker: {e}")
+            self._kite_client = None  # reset on error
+
         # Check if holiday/weekend to avoid generating mock trades
         is_holiday, reason = self.is_market_holiday_today()
         if is_holiday:
             return 0.0
 
-        # If any strategy is active, DO NOT generate mock fallback prices! We only trade on actual broker feed!
-        if strategy is not None:
-            return 0.0
-
-        # Fallback mock (only for local test/sandbox environment when market is theoretically open but API fails)
-        if "NIFTY" in symbol and "BANK" not in symbol:
-            return 24500.0 + (now_ist().second % 10 - 5) * 5
-        elif "BANK" in symbol:
-            return 52000.0 + (now_ist().second % 10 - 5) * 10
-        return 100.0
+        # Under strict user request: NEVER use mock fallback data! Return 0.0 to halt all trading.
+        logger.warning(f"Active broker disconnected or quote not found for '{symbol}'. Strictly halting trading (0.0 spot).")
+        return 0.0
 
     async def get_nearest_option_expiry(self, symbol: str) -> datetime.date:
         """Resolve standard weekly expiry date for Nifty / BankNifty options dynamically."""

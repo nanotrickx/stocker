@@ -40,13 +40,18 @@ class PaperBroker(BaseBroker):
             }
 
     async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        # Return last day static values instead of swinging mock quotes
+        # Strictly query active live broker instead of standard mock dictionary!
         quotes = {}
         for symbol in symbols:
-            quotes[symbol] = {
-                "last_price": 23909.55 if "NIFTY" in symbol else 100.0,
-                "ohlc": {"open": 23900.0, "high": 23925.0, "low": 23880.0, "close": 23909.55}
-            }
+            try:
+                ltp = await self.get_ltp(symbol)
+                if ltp > 0.0:
+                    quotes[symbol] = {
+                        "last_price": ltp,
+                        "ohlc": {"open": ltp, "high": ltp, "low": ltp, "close": ltp}
+                    }
+            except Exception:
+                pass
         return quotes
 
     async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
@@ -54,8 +59,17 @@ class PaperBroker(BaseBroker):
                             strike_price: Optional[float] = None, expiry: Optional[str] = None,
                             price: Optional[float] = None, instance_id: Optional[int] = None) -> Dict[str, Any]:
         
-        # In Paper Trading, orders are executed immediately at the specified price or static LTP
-        fill_price = price if price is not None else (23909.55 if "NIFTY" in symbol else 100.0)
+        # In Paper Trading, orders are executed immediately at the specified price or real-time LTP
+        if price is None:
+            try:
+                fill_price = await self.get_ltp(symbol)
+                if fill_price <= 0.0:
+                    raise RuntimeError("LTP resolved to 0.0 due to active broker disconnect.")
+            except Exception as e:
+                logger.error(f"[PAPER] Order placement failed due to active broker disconnect: {e}")
+                return {"status": "ERROR", "message": f"Active broker disconnected or live quote not found: {e}"}
+        else:
+            fill_price = price
         
         with Session(engine) as session:
             if transaction_type.upper() == "BUY":
@@ -93,7 +107,7 @@ class PaperBroker(BaseBroker):
                     open_trade.exit_price = fill_price
                     open_trade.exit_time = now_ist()
                     open_trade.status = "CLOSED"
-                    # Calculate realized P&L: (Exit - Entry) * Qty
+                    # Calculate realized P&L: (Exit - Entry) * quantity
                     open_trade.pnl = (fill_price - open_trade.entry_price) * quantity
                     session.add(open_trade)
                     session.commit()
@@ -137,9 +151,9 @@ class PaperBroker(BaseBroker):
                 )).first()
                 
                 if active_cred:
-                    token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
-                    if token:
-                        if active_cred.broker_name == "kite":
+                    if active_cred.broker_name == "kite":
+                        token = active_cred.access_token
+                        if token:
                             from kiteconnect import KiteConnect
                             kite = KiteConnect(api_key=active_cred.api_key)
                             kite.set_access_token(token)
@@ -148,25 +162,19 @@ class PaperBroker(BaseBroker):
                             res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
                             if res and ltp_key in res:
                                 return float(res[ltp_key]["last_price"])
-                        elif active_cred.broker_name == "dhan":
-                            from app.market_data import DhanMarketDataProvider
-                            provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=token)
-                            loop = asyncio.get_event_loop()
-                            candles = await loop.run_in_executor(None, lambda: provider.get_historical_data(
-                                symbol=symbol,
-                                days=1,
-                                from_date=datetime.now().strftime("%Y-%m-%d"),
-                                to_date=datetime.now().strftime("%Y-%m-%d"),
-                                interval="minute"
-                            ))
-                            if candles:
-                                return float(candles[-1]["close"])
+                    elif active_cred.broker_name == "dhan":
+                        from app.brokers.dhan import DhanBroker
+                        dhan = DhanBroker()
+                        success = await dhan.login({
+                            "api_key": active_cred.api_key,
+                            "api_secret": active_cred.api_secret,
+                            "access_token": active_cred.access_token,
+                            "totp_secret": active_cred.totp_secret
+                        })
+                        if success:
+                            return await dhan.get_ltp(symbol)
         except Exception as e:
-            logger.debug(f"PaperBroker actual LTP query failed: {e}")
+            logger.error(f"PaperBroker actual LTP query failed: {e}")
             
-        # Static last day value fallback (no random mock)
-        if "NIFTY" in symbol and "BANK" not in symbol:
-            return 23909.55 if "CE" not in symbol and "PE" not in symbol else 145.25
-        elif "BANK" in symbol:
-            return 48560.20 if "CE" not in symbol and "PE" not in symbol else 250.0
-        return 100.0
+        # Under strict user request: NEVER use mock fallback data! Raise exception to prevent incorrect paper trading execution.
+        raise RuntimeError(f"PaperBroker: Active live broker feed disconnected or quote not found for symbol '{symbol}'")
