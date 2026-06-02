@@ -982,6 +982,80 @@ class ExecutionEngine:
             
         return nearest_expiry_date
 
+    async def get_live_option_premiums(self, underlying_symbol: str, options: List[Tuple[float, str]]) -> Dict[Tuple[float, str], float]:
+        """
+        Fetches live option premiums for a list of (strike, option_type) from the active broker (Dhan or Zerodha/Kite).
+        Includes error handling and returns a dict mapping (strike, option_type) -> float.
+        """
+        res = {}
+        if not options:
+            return res
+
+        try:
+            with Session(db_engine) as session:
+                active_cred = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name != "telegram",
+                    BrokerCredential.active == True
+                )).first()
+
+            if not active_cred:
+                logger.error("get_live_option_premiums: No active broker credentials found.")
+                return res
+
+            broker_name = active_cred.broker_name.upper()
+            nearest_expiry_date = await self.get_nearest_option_expiry(underlying_symbol)
+
+            if broker_name == "DHAN":
+                dhan_broker = self.broker_clients.get("DHAN")
+                if dhan_broker and dhan_broker.access_token:
+                    # Format for Dhan bulk quote search, e.g. NSE:NIFTY 50_04JUN26_23250_CE
+                    expiry_raw_str = nearest_expiry_date.strftime("%d%b%y").upper()
+                    dhan_symbols = []
+                    sym_map = {}
+                    for strike, opt_type in options:
+                        dhan_sym = f"{underlying_symbol}_{expiry_raw_str}_{int(strike)}_{opt_type}"
+                        dhan_symbols.append(dhan_sym)
+                        sym_map[dhan_sym] = (strike, opt_type)
+                    
+                    quotes = await dhan_broker.get_live_quotes(dhan_symbols)
+                    for dhan_sym, q in quotes.items():
+                        if dhan_sym in sym_map:
+                            res[sym_map[dhan_sym]] = float(q["last_price"])
+            elif broker_name == "KITE":
+                kite = self._get_kite_client()
+                if kite:
+                    year_str = nearest_expiry_date.strftime("%y")
+                    month_val = str(nearest_expiry_date.month)
+                    day_str = f"{nearest_expiry_date.day:02d}"
+                    
+                    month_char = month_val
+                    if month_val == "10":
+                        month_char = "O"
+                    elif month_val == "11":
+                        month_char = "N"
+                    elif month_val == "12":
+                        month_char = "D"
+                    
+                    underlying_prefix = "NIFTY" if "NIFTY" in underlying_symbol and "BANK" not in underlying_symbol else "BANKNIFTY"
+                    
+                    kite_symbols = []
+                    sym_map = {}
+                    for strike, opt_type in options:
+                        kite_sym = f"NFO:{underlying_prefix}{year_str}{month_char}{day_str}{int(strike)}{opt_type}"
+                        kite_symbols.append(kite_sym)
+                        sym_map[kite_sym] = (strike, opt_type)
+                    
+                    loop = asyncio.get_event_loop()
+                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(kite_symbols))
+                    if real_quotes:
+                        for kite_sym, q in real_quotes.items():
+                            if kite_sym in sym_map:
+                                res[sym_map[kite_sym]] = float(q["last_price"])
+        except Exception as e:
+            logger.error(f"get_live_option_premiums failed: {e}")
+
+        return res
+
     async def get_live_option_chain(self, symbol: str, strategy: StrategyInstance) -> Dict[str, Any]:
         """
         Fetches live option chain data for the given index symbol.
@@ -1040,18 +1114,55 @@ class ExecutionEngine:
                     "tradingsymbol": tradingsymbol
                 }
 
-        # 6. Try to pull real LTP from Zerodha Kite client if active and authorized
+        # 6. Try to pull real LTP from Zerodha Kite client or Dhan if active and authorized
+        active_broker = "KITE"
+        try:
+            with Session(db_engine) as session:
+                active_cred = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name != "telegram",
+                    BrokerCredential.active == True
+                )).first()
+            if active_cred:
+                active_broker = active_cred.broker_name.upper()
+        except Exception as db_err:
+            logger.debug(f"Failed to query active broker in option chain fetch: {db_err}")
+
         kite_connected = False
         real_quotes = {}
-        try:
-            kite = self._get_kite_client()
-            if kite:
-                loop = asyncio.get_event_loop()
-                real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(option_queries))
-                if real_quotes:
-                    kite_connected = True
-        except Exception as e:
-            logger.debug(f"Kite LTP option chain fetch failed: {e}")
+        
+        if active_broker == "DHAN":
+            try:
+                dhan_broker = self.broker_clients.get("DHAN")
+                if dhan_broker and dhan_broker.access_token:
+                    # Format for Dhan bulk quote search, e.g. NSE:NIFTY 50_04JUN26_23250_CE
+                    expiry_raw_str = nearest_expiry_date.strftime("%d%b%y").upper()
+                    dhan_symbols = []
+                    dhan_symbol_to_kite = {}
+                    for strike in strikes:
+                        for opt_type in ["CE", "PE"]:
+                            dhan_sym = f"{symbol}_{expiry_raw_str}_{int(strike)}_{opt_type}"
+                            dhan_symbols.append(dhan_sym)
+                            
+                            tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(strike)}{opt_type}"
+                            kite_symbol = f"NFO:{tradingsymbol}"
+                            dhan_symbol_to_kite[dhan_sym] = kite_symbol
+                    
+                    quotes = await dhan_broker.get_live_quotes(dhan_symbols)
+                    if quotes:
+                        real_quotes = {dhan_symbol_to_kite[k]: v for k, v in quotes.items() if k in dhan_symbol_to_kite}
+                        kite_connected = True
+            except Exception as e:
+                logger.debug(f"Dhan LTP option chain fetch failed: {e}")
+        else:
+            try:
+                kite = self._get_kite_client()
+                if kite:
+                    loop = asyncio.get_event_loop()
+                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(option_queries))
+                    if real_quotes:
+                        kite_connected = True
+            except Exception as e:
+                logger.debug(f"Kite LTP option chain fetch failed: {e}")
 
         # If strict strategy and broker is offline, DO NOT return simulated premiums!
         if strategy is not None and not kite_connected:
@@ -1095,7 +1206,7 @@ class ExecutionEngine:
             "spot_price": spot,
             "atm_strike": atm,
             "expiry_date": nearest_expiry_date.strftime("%d-%b-%Y"),
-            "broker": "KITE" if kite_connected else "SANDBOX",
+            "broker": active_broker if kite_connected else "SANDBOX",
             "chain": list(chain_rows.values())
         }
 
@@ -1261,35 +1372,17 @@ class ExecutionEngine:
             
             try:
                 symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
-                nearest_expiry_date = await self.get_nearest_option_expiry(symbol)
-                year_str = nearest_expiry_date.strftime("%y")
-                month_val = str(nearest_expiry_date.month)
-                day_str = f"{nearest_expiry_date.day:02d}"
-                
-                month_char = month_val
-                if month_val == "10":
-                    month_char = "O"
-                elif month_val == "11":
-                    month_char = "N"
-                elif month_val == "12":
-                    month_char = "D"
-                
-                underlying_prefix = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
-                ce_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_ce_strike)}CE"
-                pe_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_pe_strike)}PE"
-                
-                kite = self._get_kite_client()
-                if kite:
-                    loop = asyncio.get_event_loop()
-                    option_queries = [f"NFO:{ce_tradingsymbol}", f"NFO:{pe_tradingsymbol}"]
-                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp(option_queries))
-                    if real_quotes:
-                        if f"NFO:{ce_tradingsymbol}" in real_quotes:
-                            real_ce_premium = float(real_quotes[f"NFO:{ce_tradingsymbol}"]["last_price"])
-                        if f"NFO:{pe_tradingsymbol}" in real_quotes:
-                            real_pe_premium = float(real_quotes[f"NFO:{pe_tradingsymbol}"]["last_price"])
+                premiums = await self.get_live_option_premiums(
+                    underlying_symbol=symbol,
+                    options=[
+                        (state.selected_ce_strike, "CE"),
+                        (state.selected_pe_strike, "PE")
+                    ]
+                )
+                real_ce_premium = premiums.get((state.selected_ce_strike, "CE"), 0.0)
+                real_pe_premium = premiums.get((state.selected_pe_strike, "PE"), 0.0)
             except Exception as e:
-                logger.debug(f"ORB Live premiums fetch failed: {e}")
+                logger.error(f"ORB Live premiums fetch failed: {e}")
 
             # If broker offline / didn't send data, strictly disable mock fallback for paper/live trading
             if real_ce_premium <= 0.0 or real_pe_premium <= 0.0:
@@ -1406,30 +1499,13 @@ class ExecutionEngine:
             real_premium = 0.0
             try:
                 symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
-                nearest_expiry_date = await self.get_nearest_option_expiry(symbol)
-                year_str = nearest_expiry_date.strftime("%y")
-                month_val = str(nearest_expiry_date.month)
-                day_str = f"{nearest_expiry_date.day:02d}"
-                
-                month_char = month_val
-                if month_val == "10":
-                    month_char = "O"
-                elif month_val == "11":
-                    month_char = "N"
-                elif month_val == "12":
-                    month_char = "D"
-                
-                underlying_prefix = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
-                opt_tradingsymbol = f"{underlying_prefix}{year_str}{month_char}{day_str}{int(state.selected_strike)}{state.selected_option_type}"
-                
-                kite = self._get_kite_client()
-                if kite:
-                    loop = asyncio.get_event_loop()
-                    real_quotes = await loop.run_in_executor(None, lambda: kite.ltp([f"NFO:{opt_tradingsymbol}"]))
-                    if real_quotes and f"NFO:{opt_tradingsymbol}" in real_quotes:
-                        real_premium = float(real_quotes[f"NFO:{opt_tradingsymbol}"]["last_price"])
+                premiums = await self.get_live_option_premiums(
+                    underlying_symbol=symbol,
+                    options=[(state.selected_strike, state.selected_option_type)]
+                )
+                real_premium = premiums.get((state.selected_strike, state.selected_option_type), 0.0)
             except Exception as e:
-                logger.debug(f"ORB Live position premium fetch failed: {e}")
+                logger.error(f"ORB Live position premium fetch failed: {e}")
 
             # If broker offline / didn't send data, strictly disable mock fallback for paper/live trading
             if real_premium <= 0.0:

@@ -70,6 +70,7 @@ class DhanBroker(BaseBroker):
         self.client_id = None
         self.access_token = None
         self._headers = {}
+        self._provider = None
 
     async def login(self, credentials: Dict[str, Any]) -> bool:
         self.client_id = credentials.get("client_id") or credentials.get("api_key")
@@ -148,7 +149,131 @@ class DhanBroker(BaseBroker):
         return {"broker": "DHAN", "status": "ERROR"}
 
     async def get_live_quotes(self, symbols: List[str]) -> Dict[str, Any]:
-        return {}
+        """
+        Fetches live Last Traded Price (LTP) for multiple symbols in a SINGLE REST API call.
+        Includes a 1.5-second cache and dynamic throttling with an asyncio.Lock to prevent concurrent race conditions.
+        """
+        import requests
+        import time
+        import asyncio
+
+        if not self.access_token or not self.client_id:
+            logger.error("DhanBroker: API Access Token or Client ID is missing.")
+            return {}
+
+        if not hasattr(self, "_quotes_cache"):
+            self._quotes_cache = {}
+        if not hasattr(self, "_last_api_call_time"):
+            self._last_api_call_time = 0.0
+        if not hasattr(self, "_api_lock"):
+            self._api_lock = asyncio.Lock()
+
+        async with self._api_lock:
+            now_time = time.time()
+            # 1. Filter out symbols that are already fresh in cache
+            res = {}
+            missing_symbols = []
+            for symbol in symbols:
+                if symbol in self._quotes_cache:
+                    val, cache_time = self._quotes_cache[symbol]
+                    if now_time - cache_time < 1.5:
+                        res[symbol] = val
+                        continue
+                missing_symbols.append(symbol)
+
+            if not missing_symbols:
+                return res
+
+            # 2. Apply rate-limit safe throttling sleep before making a new HTTP request
+            time_since_last_call = now_time - self._last_api_call_time
+            if time_since_last_call < 1.5:
+                sleep_needed = 1.5 - time_since_last_call
+                logger.debug(f"DhanBroker: Throttling API call. Sleeping for {sleep_needed:.2f}s...")
+                await asyncio.sleep(sleep_needed)
+                now_time = time.time()
+
+            payload = {}
+            sec_to_sym = {}
+
+            for symbol in missing_symbols:
+                segment = "NSE_FNO"
+                sec_id = None
+
+                # Parse symbol to resolve Dhan security ID and segment
+                if symbol.startswith("NSE:"):
+                    underlying_clean = symbol.split(":")[-1].upper()
+                    if "BANK" in underlying_clean:
+                        sec_id = 25
+                    else:
+                        sec_id = 13
+                    segment = "IDX_I"
+                elif "_" in symbol:
+                    try:
+                        parts = symbol.split("_")
+                        underlying = parts[0]
+                        expiry_raw = parts[1]
+                        strike = float(parts[2])
+                        opt_type = parts[3]
+                        
+                        from datetime import datetime as dt
+                        expiry_date = dt.strptime(expiry_raw, "%d%b%y").strftime("%Y-%m-%d")
+                        
+                        if not self._provider:
+                            from app.market_data import DhanMarketDataProvider
+                            self._provider = DhanMarketDataProvider(client_id=self.client_id, access_token=self.access_token)
+                        sec_id = self._provider._resolve_option_security_id(underlying, strike, opt_type, expiry_date)
+                    except Exception as e:
+                        logger.error(f"DhanBroker: Failed to parse or resolve option symbol {symbol}: {e}")
+                        continue
+                else:
+                    under_upper = symbol.upper()
+                    if "BANK" in under_upper:
+                        sec_id = 25
+                    else:
+                        sec_id = 13
+                    segment = "IDX_I"
+
+                if sec_id:
+                    if segment not in payload:
+                        payload[segment] = []
+                    payload[segment].append(int(sec_id))
+                    sec_to_sym[str(sec_id)] = (symbol, segment)
+
+            if not payload:
+                return res
+
+            url = "https://api.dhan.co/v2/marketfeed/ltp"
+            try:
+                self._last_api_call_time = time.time()
+                resp = requests.post(url, json=payload, headers=self._headers, timeout=15)
+                if resp.status_code == 200:
+                    res_data = resp.json()
+                    if res_data.get("status") == "success" or res_data.get("status") == "SUCCESS":
+                        data = res_data.get("data", {})
+                        for sec_id_str, sym_info in sec_to_sym.items():
+                            symbol_name, segment_name = sym_info
+                            val = data.get(segment_name, {}).get(sec_id_str, {}).get("last_price")
+                            if val is not None:
+                                quote_val = {
+                                    "last_price": float(val),
+                                    "ohlc": {"close": float(val)}
+                                }
+                                # Cache the result
+                                self._quotes_cache[symbol_name] = (quote_val, self._last_api_call_time)
+                                res[symbol_name] = quote_val
+                        return res
+                logger.error(f"DhanBroker: bulk /marketfeed/ltp call failed: {resp.status_code} - {resp.text}")
+            except Exception as e:
+                logger.error(f"DhanBroker: Exception during bulk marketfeed/ltp call: {e}")
+
+            return res
+
+    async def get_ltp(self, symbol: str) -> float:
+        """Fetch real-time LTP for a single symbol using the bulk rate-limit safe lookup."""
+        res = await self.get_live_quotes([symbol])
+        if symbol in res:
+            return float(res[symbol]["last_price"])
+        raise RuntimeError(f"Dhan broker disconnected or live quote not found for {symbol}")
 
     async def place_order(self, strategy_id: str, symbol: str, transaction_type: str, 
                             quantity: int, option_type: Optional[str] = None, 
@@ -161,75 +286,3 @@ class DhanBroker(BaseBroker):
 
     async def get_positions(self) -> List[Dict[str, Any]]:
         return []
-
-    async def get_ltp(self, symbol: str) -> float:
-        """
-        Queries the real-time Dhan REST API to retrieve the Last Traded Price (LTP).
-        Uses dynamic parsing for option symbols and resolves security IDs via Option Chain.
-        """
-        import requests
-        if not self.access_token or not self.client_id:
-            logger.error("DhanBroker: API Access Token or Client ID is missing.")
-            raise RuntimeError("Dhan broker not authenticated.")
-
-        segment = "NSE_FNO"
-        sec_id = None
-
-        # Parse symbol to resolve Dhan security ID and segment
-        if symbol.startswith("NSE:"):
-            underlying_clean = symbol.split(":")[-1].upper()
-            if "BANK" in underlying_clean:
-                sec_id = 25
-            else:
-                sec_id = 13
-            segment = "IDX_I"
-        elif "_" in symbol:
-            # Option Symbol format: e.g. NSE:NIFTY 50_04JUN26_23900_CE
-            try:
-                parts = symbol.split("_")
-                underlying = parts[0]
-                expiry_raw = parts[1]
-                strike = float(parts[2])
-                opt_type = parts[3]
-                
-                # Format raw expiry (e.g. 04JUN26) to YYYY-MM-DD
-                from datetime import datetime as dt
-                expiry_date = dt.strptime(expiry_raw, "%d%b%y").strftime("%Y-%m-%d")
-                
-                from app.market_data import DhanMarketDataProvider
-                provider = DhanMarketDataProvider(client_id=self.client_id, access_token=self.access_token)
-                sec_id = provider._resolve_option_security_id(underlying, strike, opt_type, expiry_date)
-            except Exception as e:
-                logger.error(f"DhanBroker: Failed to parse or resolve option symbol {symbol}: {e}")
-                raise RuntimeError(f"Could not resolve option symbol {symbol}: {e}")
-        else:
-            under_upper = symbol.upper()
-            if "BANK" in under_upper:
-                sec_id = 25
-            else:
-                sec_id = 13
-            segment = "IDX_I"
-
-        if not sec_id:
-            logger.error(f"DhanBroker: Security ID could not be resolved for symbol '{symbol}'")
-            raise RuntimeError(f"Dhan security ID resolution failed for {symbol}")
-
-        # Call Dhan /marketfeed/ltp POST endpoint
-        url = "https://api.dhan.co/v2/marketfeed/ltp"
-        payload = {
-            segment: [int(sec_id)]
-        }
-
-        try:
-            resp = requests.post(url, json=payload, headers=self._headers, timeout=15)
-            if resp.status_code == 200:
-                res_data = resp.json()
-                if res_data.get("status") == "success" or res_data.get("status") == "SUCCESS":
-                    val = res_data.get("data", {}).get(segment, {}).get(str(sec_id), {}).get("last_price")
-                    if val is not None:
-                        return float(val)
-            logger.error(f"DhanBroker: marketfeed/ltp call failed for securityId {sec_id}: {resp.status_code} - {resp.text}")
-        except Exception as e:
-            logger.error(f"DhanBroker: Exception during marketfeed/ltp call for {symbol}: {e}")
-
-        raise RuntimeError(f"Dhan broker disconnected or live quote not found for {symbol}")
