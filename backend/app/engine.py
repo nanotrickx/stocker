@@ -896,7 +896,17 @@ class ExecutionEngine:
         """
         Fetch real-time LTP from the active broker (Dhan or Zerodha).
         Strictly halts trading (returns 0.0) if broker is disconnected or quote is not found.
+        Includes a 1.5-second cache to prevent Dhan 429 Rate Limit (1 request/sec).
         """
+        now_time_check = datetime.now()
+        if not hasattr(self, "ltp_cache"):
+            self.ltp_cache = {}
+
+        if symbol in self.ltp_cache:
+            cached_val, cached_time = self.ltp_cache[symbol]
+            if (now_time_check - cached_time).total_seconds() < 1.5:
+                return cached_val
+
         try:
             with Session(db_engine) as session:
                 active_cred = session.exec(select(BrokerCredential).where(
@@ -910,7 +920,9 @@ class ExecutionEngine:
                     dhan_broker = self.broker_clients.get("DHAN")
                     if dhan_broker and dhan_broker.access_token:
                         val = await dhan_broker.get_ltp(symbol)
-                        return float(val)
+                        val_float = float(val)
+                        self.ltp_cache[symbol] = (val_float, now_time_check)
+                        return val_float
                 elif broker_name == "KITE":
                     kite = self._get_kite_client()
                     if kite:
@@ -918,7 +930,9 @@ class ExecutionEngine:
                         ltp_key = symbol if ":" in symbol else f"NSE:{symbol}"
                         ltp_res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
                         if ltp_res and ltp_key in ltp_res:
-                            return float(ltp_res[ltp_key]["last_price"])
+                            val_float = float(ltp_res[ltp_key]["last_price"])
+                            self.ltp_cache[symbol] = (val_float, now_time_check)
+                            return val_float
         except Exception as e:
             logger.error(f"LTP fetch failed for active broker: {e}")
             self._kite_client = None  # reset on error
@@ -1198,15 +1212,8 @@ class ExecutionEngine:
                 symbol = config.get("symbols", ["NSE:NIFTY 50"])[0]
                 candle = await self._fetch_915_candle(symbol)
                 if not candle:
-                    is_holiday, reason = self.is_market_holiday_today()
-                    if is_holiday:
-                        # Market is closed for holiday, suspend execution
-                        return
-                    # Mock fallback for sandbox / offline mode
-                    if "BANK" in symbol:
-                        candle = {"open": 52000.0, "high": 52100.0, "low": 51950.0, "close": 52050.0}
-                    else:
-                        candle = {"open": 24500.0, "high": 24550.0, "low": 24480.0, "close": 24520.0}
+                    logger.warning(f"ORB [{strategy.name}]: Failed to fetch real 9:15 AM opening candle from Dhan/Zerodha. Halting strategy entry.")
+                    return
 
                 state.opening_high = candle["high"]
                 state.opening_low = candle["low"]
@@ -1517,26 +1524,54 @@ class ExecutionEngine:
                     )
 
     async def _fetch_915_candle(self, symbol: str) -> Optional[Dict]:
-        """Fetch the 9:15 opening candle from Kite historical API."""
+        """Fetch the 9:15 opening candle from the active broker (Dhan or Zerodha) historical API."""
         try:
-            kite = self._get_kite_client()
-            if not kite:
-                return None
-            today = now_ist().strftime("%Y-%m-%d")
-            token = 256265 if "NIFTY 50" in symbol else 260105
-            loop = asyncio.get_event_loop()
-            candles = await loop.run_in_executor(None, lambda: kite.historical_data(
-                instrument_token=token,
-                from_date=f"{today} 09:15:00",
-                to_date=f"{today} 09:16:00",
-                interval="minute"
-            ))
-            if candles and len(candles) > 0:
-                c = candles[0]
-                return {"open": float(c["open"]), "high": float(c["high"]),
-                        "low": float(c["low"]), "close": float(c["close"])}
+            with Session(db_engine) as session:
+                active_cred = session.exec(select(BrokerCredential).where(
+                    BrokerCredential.broker_name != "telegram",
+                    BrokerCredential.active == True
+                )).first()
+
+            if active_cred:
+                broker_name = active_cred.broker_name.upper()
+                if broker_name == "DHAN":
+                    from app.brokers.dhan import get_dhan_token
+                    with Session(db_engine) as session:
+                        dhan_token = get_dhan_token(active_cred, session)
+                    if dhan_token:
+                        from app.market_data import DhanMarketDataProvider
+                        provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=dhan_token)
+                        today = now_ist().strftime("%Y-%m-%d")
+                        loop = asyncio.get_event_loop()
+                        candles = await loop.run_in_executor(None, lambda: provider.get_historical_data(
+                            symbol=symbol,
+                            days=1,
+                            from_date=today,
+                            to_date=today,
+                            interval="minute"
+                        ))
+                        if candles and len(candles) > 0:
+                            c = candles[0]
+                            return {"open": float(c["open"]), "high": float(c["high"]),
+                                    "low": float(c["low"]), "close": float(c["close"])}
+                elif broker_name == "KITE":
+                    kite = self._get_kite_client()
+                    if kite:
+                        today = now_ist().strftime("%Y-%m-%d")
+                        token = 256265 if "NIFTY 50" in symbol else 260105
+                        loop = asyncio.get_event_loop()
+                        candles = await loop.run_in_executor(None, lambda: kite.historical_data(
+                            instrument_token=token,
+                            from_date=f"{today} 09:15:00",
+                            to_date=f"{today} 09:16:00",
+                            interval="minute"
+                        ))
+                        if candles and len(candles) > 0:
+                            c = candles[0]
+                            return {"open": float(c["open"]), "high": float(c["high"]),
+                                    "low": float(c["low"]), "close": float(c["close"])}
         except Exception as e:
-            logger.warning(f"Failed to fetch 9:15 candle: {e}")
+            logger.warning(f"Failed to fetch 9:15 candle from active broker: {e}")
         return None
 
     # ── Main Engine Loop ──────────────────────────────────────────────
