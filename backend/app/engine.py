@@ -497,11 +497,14 @@ class ExecutionEngine:
                     self.historical_data_cache[symbol] = df
                     return df
 
-            elif cred_dhan and cred_dhan.api_key and cred_dhan.access_token:
-                logger.info(f"Active Dhan credentials detected. Querying 1-minute candles from Dhan for {symbol}...")
-                from app.market_data import DhanMarketDataProvider
-                import asyncio
-                provider = DhanMarketDataProvider(client_id=cred_dhan.api_key, access_token=cred_dhan.access_token)
+            elif cred_dhan:
+                from app.brokers.dhan import get_dhan_token
+                dhan_token = get_dhan_token(cred_dhan, session)
+                if dhan_token:
+                    logger.info(f"Active Dhan credentials detected. Querying 1-minute candles from Dhan for {symbol}...")
+                    from app.market_data import DhanMarketDataProvider
+                    import asyncio
+                    provider = DhanMarketDataProvider(client_id=cred_dhan.api_key, access_token=dhan_token)
                 
                 to_date = now_ist()
                 from_date = to_date - timedelta(days=3)

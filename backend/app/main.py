@@ -119,9 +119,9 @@ async def broadcast_stream_task():
                     )).first()
                     
                     if active_cred:
-                        token = active_cred.access_token or (active_cred.api_secret if active_cred.broker_name == "dhan" else None)
-                        if token:
-                            if active_cred.broker_name == "kite":
+                        if active_cred.broker_name == "kite":
+                            token = active_cred.access_token
+                            if token:
                                 from kiteconnect import KiteConnect
                                 kite = KiteConnect(api_key=active_cred.api_key)
                                 kite.set_access_token(token)
@@ -129,9 +129,12 @@ async def broadcast_stream_task():
                                 if ltp_res and "NSE:NIFTY 50" in ltp_res:
                                     spot = float(ltp_res["NSE:NIFTY 50"]["last_price"])
                                     used_real_data = True
-                            elif active_cred.broker_name == "dhan":
+                        elif active_cred.broker_name == "dhan":
+                            from app.brokers.dhan import get_dhan_token
+                            dhan_token = get_dhan_token(active_cred, db_session)
+                            if dhan_token:
                                 from app.market_data import DhanMarketDataProvider
-                                provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=token)
+                                provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=dhan_token)
                                 from_dt = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
                                 candles = provider.get_historical_data(
                                     symbol="NSE:NIFTY 50",

@@ -90,6 +90,24 @@ class DhanBroker(BaseBroker):
                         if gen_token:
                             self.access_token = gen_token
                             logger.info("🟢 Automatically generated fresh Dhan Access Token via TOTP!")
+                            try:
+                                from app.database import engine as db_engine, BrokerCredential
+                                from sqlmodel import Session, select
+                                from app.database import now_ist
+                                with Session(db_engine) as session:
+                                    statement = select(BrokerCredential).where(
+                                        BrokerCredential.broker_name == "dhan",
+                                        BrokerCredential.api_key == self.client_id
+                                    )
+                                    cred = session.exec(statement).first()
+                                    if cred:
+                                        cred.access_token = gen_token
+                                        cred.updated_at = now_ist()
+                                        session.add(cred)
+                                        session.commit()
+                                        logger.info("💾 Successfully saved fresh Dhan Access Token to SQLite database.")
+                            except Exception as db_err:
+                                logger.error(f"🔴 Failed to save renewed Dhan token to database: {db_err}")
                         else:
                             logger.error(f"🔴 Dhan token generation failed: Server returned error message: {res_json.get('message') or res_json}")
                     else:
