@@ -627,9 +627,7 @@ class ExecutionEngine:
             
             logger.info(f"🚀 Strategy '{strategy.name}' triggered ENTRY! Placing {opt_type} Buy.")
             
-            # Fetch option mock LTP or standard index LTP
-            option_ltp = 150.0  # Simulated default premium
-            
+            # Use real market execution (price=None) for live fills, and dynamically resolve Dhan/Kite quote for paper trading
             res = await broker.place_order(
                 strategy_id=strategy.template_id,
                 symbol=option_symbol,
@@ -638,7 +636,7 @@ class ExecutionEngine:
                 option_type=opt_type,
                 strike_price=strike,
                 expiry="WEEKLY",
-                price=option_ltp,
+                price=None,
                 instance_id=strategy.id
             )
 
