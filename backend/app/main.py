@@ -243,6 +243,8 @@ class BacktestRequest(BaseModel):
     days: int = 30
     initial_capital: float = 100000.0
     lots: int = 1
+    slippage_pct: float = 0.0
+    trail_sl_pct: Optional[float] = None
 
 class TelegramBacktestReportRequest(BaseModel):
     strategy_name: str
@@ -749,6 +751,8 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
 
             if entry_triggered:
                 entry_price = price  # for stocks, entry = close price
+                if payload.slippage_pct > 0:
+                    entry_price = round(entry_price * (1 + payload.slippage_pct / 100.0), 2)
                 margin_req  = entry_price * qty
                 if capital >= margin_req:
                     active_trade = {
@@ -758,6 +762,7 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                         "qty":         qty,
                         "symbol":      payload.symbol,
                         "instrument_type": payload.instrument_type,
+                        "max_price_since_entry": price,
                     }
                     bar["signal"]      = "BUY"
                     bar["trade_state"] = "ENTRY"
@@ -780,6 +785,20 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
         else:
             entry_price = active_trade["entry_price"]
             pnl_pct     = ((price - entry_price) / entry_price) * 100.0
+
+            # Track max price for trailing stop loss
+            if "max_price_since_entry" not in active_trade:
+                active_trade["max_price_since_entry"] = price
+            active_trade["max_price_since_entry"] = max(active_trade["max_price_since_entry"], price)
+
+            # Check trailing stop loss if trail_sl_pct is specified
+            trail_triggered = False
+            trail_sl_price = 0.0
+            if payload.trail_sl_pct and payload.trail_sl_pct > 0:
+                trail_sl_price = active_trade["max_price_since_entry"] * (1 - payload.trail_sl_pct / 100.0)
+                if price <= trail_sl_price:
+                    trail_triggered = True
+
             exit_triggered = False
             exit_reason    = "INDICATOR"
             exit_reasons   = []
@@ -788,6 +807,10 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                 exit_triggered = True
                 exit_reason    = "STOP_LOSS"
                 exit_reasons   = [f"Stop-loss hit: P&L {pnl_pct:.2f}% ≤ -{sl_limit}%"]
+            elif trail_triggered:
+                exit_triggered = True
+                exit_reason    = "TRAILING_STOP_LOSS"
+                exit_reasons   = [f"Trailing stop-loss hit: Price ₹{price:.2f} ≤ ₹{trail_sl_price:.2f} (Max reached: ₹{active_trade['max_price_since_entry']:.2f})"]
             elif pnl_pct >= target_limit:
                 exit_triggered = True
                 exit_reason    = "TARGET"
@@ -810,8 +833,12 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                 exit_reasons = xreasons
 
             if exit_triggered:
-                trade_pnl     = round((price - entry_price) * qty, 2)
-                capital      += (price * qty)            # return sale proceeds
+                exit_price = price
+                if payload.slippage_pct > 0:
+                    exit_price = round(exit_price * (1 - payload.slippage_pct / 100.0), 2)
+                trade_pnl     = round((exit_price - entry_price) * qty, 2)
+                pnl_pct       = round(((exit_price - entry_price) / entry_price) * 100.0, 2)
+                capital      += (exit_price * qty)            # return sale proceeds
                 capital       = round(capital, 2)
 
                 completed_trades.append({
@@ -821,16 +848,16 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                     "exit_time":    ts,
                     "qty":          qty,
                     "entry_price":  entry_price,
-                    "exit_price":   round(price, 2),
+                    "exit_price":   exit_price,
                     "pnl":          trade_pnl,
-                    "pnl_pct":      round(pnl_pct, 2),
+                    "pnl_pct":      pnl_pct,
                     "exit_reason":  exit_reason,
                 })
                 bar["signal"]      = "SELL"
                 bar["trade_state"] = "EXIT"
                 journal_entry["action"]  = "SELL"
                 journal_entry["qty"]     = qty
-                journal_entry["price"]   = price
+                journal_entry["price"]   = exit_price
                 journal_entry["pnl"]     = trade_pnl
                 journal_entry["reason"]  = exit_reasons
                 journal_entry["note"]    = (
