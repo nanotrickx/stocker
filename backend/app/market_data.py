@@ -487,6 +487,16 @@ class DhanMarketDataProvider(BaseMarketDataProvider):
 
         # 3. Call Dhan Charts API
         is_intraday = interval != "day"
+        if is_intraday:
+            # Dhan's intraday charts API requires toDate to be strictly greater than fromDate to return data
+            try:
+                from_dt = datetime.strptime(fd, "%Y-%m-%d")
+                to_dt = datetime.strptime(td, "%Y-%m-%d")
+                if from_dt >= to_dt:
+                    td = (from_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
         endpoint = "intraday" if is_intraday else "historical"
         url = f"https://api.dhan.co/v2/charts/{endpoint}"
 
