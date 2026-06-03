@@ -556,7 +556,9 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
         df,
         initial_capital=payload.initial_capital,
         provider=provider,
-        expiry_date=payload.expiry_date
+        expiry_date=payload.expiry_date,
+        slippage_pct=payload.slippage_pct,
+        trail_sl_pct=payload.trail_sl_pct,
     )
 
     # Inject interval/meta info

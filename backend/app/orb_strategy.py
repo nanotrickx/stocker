@@ -202,6 +202,8 @@ class ORBStrategyEngine:
         initial_capital: float = 100000.0,
         provider: Optional[Any] = None,
         expiry_date: Optional[str] = None,
+        slippage_pct: float = 0.0,
+        trail_sl_pct: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Run ORB strategy bar-by-bar on an intraday DataFrame.
@@ -527,14 +529,19 @@ class ORBStrategyEngine:
                     if trigger_buy:
                         state.selected_option_type = selected_type
                         state.selected_strike = selected_strike
-                        state.entry_price = est_prem
+                        
+                        entry_price = est_prem
+                        if slippage_pct > 0:
+                            entry_price = round(entry_price * (1 + slippage_pct / 100.0), 2)
+                        
+                        state.entry_price = entry_price
                         state.entry_time = ts
 
                         # Determine target percentage
                         current_target_pct = 15.0 if state.first_trade_hit_sl else 10.0
 
-                        state.target_price = round(est_prem * (1 + current_target_pct / 100), 2)
-                        state.stop_loss_price = round(est_prem * (1 - self.sl_pct / 100), 2)
+                        state.target_price = round(entry_price * (1 + current_target_pct / 100), 2)
+                        state.stop_loss_price = round(entry_price * (1 - self.sl_pct / 100), 2)
                         state.breakout_price = row["close"]
                         state.breakout_time = ts
                         state.phase = "IN_POSITION"
@@ -588,6 +595,16 @@ class ORBStrategyEngine:
                         delta = 0.5 if state.selected_option_type == "CE" else -0.5
                         current_premium = max(0.5, state.entry_price + (spot_move * delta))
 
+                    # Track max price for trailing stop loss
+                    if not hasattr(state, "max_price_since_entry") or state.max_price_since_entry is None:
+                        state.max_price_since_entry = state.entry_price
+                    state.max_price_since_entry = max(state.max_price_since_entry, current_premium)
+
+                    if trail_sl_pct and trail_sl_pct > 0:
+                        trail_sl_price = round(state.max_price_since_entry * (1 - trail_sl_pct / 100.0), 2)
+                        if trail_sl_price > state.stop_loss_price:
+                            state.stop_loss_price = trail_sl_price
+
                     exit_reason = None
                     exit_price = None
 
@@ -595,9 +612,9 @@ class ORBStrategyEngine:
                     if current_premium >= state.target_price:
                         exit_reason = "TARGET"
                         exit_price = state.target_price
-                    # SL
+                    # SL / Trailing SL
                     elif current_premium <= state.stop_loss_price:
-                        exit_reason = "STOP_LOSS"
+                        exit_reason = "TRAILING_STOP_LOSS" if (trail_sl_pct and state.stop_loss_price > state.entry_price) else "STOP_LOSS"
                         exit_price = state.stop_loss_price
                     # EOD
                     elif bar_time >= time(15, 15):
@@ -605,13 +622,15 @@ class ORBStrategyEngine:
                         exit_price = round(current_premium, 2)
 
                     if exit_reason:
+                        if slippage_pct > 0:
+                            exit_price = round(exit_price * (1 - slippage_pct / 100.0), 2)
                         pnl = (exit_price - state.entry_price) * self.qty
                         state.pnl += pnl
                         capital += pnl
                         signal = "SELL"
 
                         # Determine next state
-                        if exit_reason == "STOP_LOSS" and len(state.trades_taken) < 2:
+                        if exit_reason in ("STOP_LOSS", "TRAILING_STOP_LOSS") and len(state.trades_taken) < 2:
                             state.first_trade_hit_sl = True
                             state.phase = "WAITING_BREAKOUT"
                             state.index_high_broke_out = False
