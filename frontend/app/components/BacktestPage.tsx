@@ -329,6 +329,15 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
 
 const SYMBOLS = ['NSE:NIFTY 50','NSE:NIFTY BANK','NSE:RELIANCE','NSE:TCS','NSE:INFY','NSE:HDFCBANK','NSE:ICICIBANK','NSE:SBIN','NSE:WIPRO','NSE:BAJFINANCE','NSE:TATAMOTORS'];
 
+const getLotSize = (symbol: string): number => {
+  const s = symbol.toUpperCase();
+  if (s.includes('BANKNIFTY') || s.includes('NIFTY BANK') || s.includes('BANK')) return 15;
+  if (s.includes('FINNIFTY') || s.includes('FIN NIFTY')) return 40;
+  if (s.includes('SENSEX')) return 10;
+  if (s.includes('NIFTY')) return 50;
+  return 1;
+};
+
 export default function BacktestPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [stratId, setStratId] = useState('');
@@ -948,31 +957,37 @@ export default function BacktestPage() {
                   <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
                     <thead>
                       <tr style={{ borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
-                        {['Entry Time','Exit Time','Symbol','Type','Qty','Buy ₹','Sell ₹','Lot Value','P&L','P&L %','Exit Reason'].map(h=>(
+                        {['Entry Time','Exit Time','Symbol','Type','Lots','Lot Size','Qty','Buy ₹','Sell ₹','Trade Value','P&L','P&L %','Exit Reason'].map(h=>(
                           <th key={h} style={{ padding:'10px 12px', textAlign:'left', color:'var(--text-muted)', fontWeight:600, whiteSpace:'nowrap' }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {result.trades.map((t,i)=>(
-                        <tr key={i} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
-                          <td style={{ padding:'10px 12px', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>{t.entry_time}</td>
-                          <td style={{ padding:'10px 12px', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>{t.exit_time}</td>
-                          <td style={{ padding:'10px 12px', fontWeight:600 }}>{t.symbol}</td>
-                          <td style={{ padding:'10px 12px' }}><span style={{ fontSize:'10px', padding:'2px 7px', borderRadius:'10px', background:'rgba(99,102,241,0.15)', color:'#818CF8' }}>{t.instrument_type}</span></td>
-                          <td style={{ padding:'10px 12px', textAlign:'center' }}>{t.qty}</td>
-                          <td style={{ padding:'10px 12px', color:'var(--text-secondary)' }}>₹{t.entry_price.toFixed(2)}</td>
-                          <td style={{ padding:'10px 12px', fontWeight:600 }}>₹{t.exit_price.toFixed(2)}</td>
-                          <td style={{ padding:'10px 12px', fontWeight:600, color:'var(--text-secondary)' }}>₹{(t.qty * t.entry_price).toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-                          <td style={{ padding:'10px 12px', fontWeight:700, color:pnlColor(t.pnl) }}>{t.pnl>=0?'+':''}₹{t.pnl.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-                          <td style={{ padding:'10px 12px', color:pnlColor(t.pnl_pct) }}>{t.pnl_pct>=0?'+':''}{t.pnl_pct}%</td>
-                          <td style={{ padding:'10px 12px' }}>
-                            <span style={{ fontSize:'10px', padding:'2px 8px', borderRadius:'10px', fontWeight:700, background: t.exit_reason==='STOP_LOSS'?'rgba(239,68,68,0.1)':t.exit_reason==='TARGET'?'rgba(16,185,129,0.1)':'rgba(245,158,11,0.1)', color:t.exit_reason==='STOP_LOSS'?'#EF4444':t.exit_reason==='TARGET'?'#10B981':'#F59E0B' }}>
-                              {t.exit_reason}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {result.trades.map((t,i)=>{
+                        const lotSize = getLotSize(t.symbol);
+                        const lotsCount = t.qty / lotSize;
+                        return (
+                          <tr key={i} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                            <td style={{ padding:'10px 12px', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>{t.entry_time}</td>
+                            <td style={{ padding:'10px 12px', color:'var(--text-secondary)', whiteSpace:'nowrap' }}>{t.exit_time}</td>
+                            <td style={{ padding:'10px 12px', fontWeight:600 }}>{t.symbol}</td>
+                            <td style={{ padding:'10px 12px' }}><span style={{ fontSize:'10px', padding:'2px 7px', borderRadius:'10px', background:'rgba(99,102,241,0.15)', color:'#818CF8' }}>{t.instrument_type}</span></td>
+                            <td style={{ padding:'10px 12px', textAlign:'center', fontWeight:600, color:'var(--accent-yellow)' }}>{lotsCount % 1 === 0 ? lotsCount : lotsCount.toFixed(1)}</td>
+                            <td style={{ padding:'10px 12px', textAlign:'center', color:'var(--text-muted)' }}>{lotSize}</td>
+                            <td style={{ padding:'10px 12px', textAlign:'center' }}>{t.qty}</td>
+                            <td style={{ padding:'10px 12px', color:'var(--text-secondary)' }}>₹{t.entry_price.toFixed(2)}</td>
+                            <td style={{ padding:'10px 12px', fontWeight:600 }}>₹{t.exit_price.toFixed(2)}</td>
+                            <td style={{ padding:'10px 12px', fontWeight:600, color:'var(--text-secondary)' }}>₹{(t.qty * t.entry_price).toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
+                            <td style={{ padding:'10px 12px', fontWeight:700, color:pnlColor(t.pnl) }}>{t.pnl>=0?'+':''}₹{t.pnl.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
+                            <td style={{ padding:'10px 12px', color:pnlColor(t.pnl_pct) }}>{t.pnl_pct>=0?'+':''}{t.pnl_pct}%</td>
+                            <td style={{ padding:'10px 12px' }}>
+                              <span style={{ fontSize:'10px', padding:'2px 8px', borderRadius:'10px', fontWeight:700, background: t.exit_reason==='STOP_LOSS'?'rgba(239,68,68,0.1)':t.exit_reason==='TARGET'?'rgba(16,185,129,0.1)':'rgba(245,158,11,0.1)', color:t.exit_reason==='STOP_LOSS'?'#EF4444':t.exit_reason==='TARGET'?'#10B981':'#F59E0B' }}>
+                                {t.exit_reason}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
