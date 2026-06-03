@@ -343,6 +343,7 @@ export default function BacktestPage() {
   const [interval, setInterval] = useState('5minute');
   const [days, setDays] = useState(30);
   const [capital, setCapital] = useState(100000);
+  const [lots, setLots] = useState(1);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -363,7 +364,7 @@ export default function BacktestPage() {
     setRunning(true); setError(null); setResult(null);
     setTelegramSent(false); setTelegramError(null);
     try {
-      const body: any = { strategy_id: stratId, symbol, instrument_type: instrType, days, initial_capital: capital };
+      const body: any = { strategy_id: stratId, symbol, instrument_type: instrType, days, initial_capital: capital, lots };
       if (instrType !== 'STOCK') { body.strike_price = parseFloat(strikePrice) || undefined; body.expiry_date = expiryDate || undefined; }
       if (dateMode === 'range' && fromDate && toDate) { body.from_date = fromDate; body.to_date = toDate; }
       if (dateMode === 'single' && singleDay) { body.single_day = singleDay; body.interval = interval; }
@@ -629,6 +630,12 @@ export default function BacktestPage() {
         <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
           <label style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'.05em' }}>Initial Capital (₹)</label>
           <input type="number" value={capital} onChange={e=>setCapital(Number(e.target.value))} className="input-glass" style={{ padding:'10px', fontSize:'13px' }} />
+        </div>
+
+        {/* Lots */}
+        <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+          <label style={{ fontSize:'11px', color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'.05em' }}>Lots to Trade</label>
+          <input type="number" min={1} value={lots} onChange={e=>setLots(Math.max(1, Number(e.target.value)))} className="input-glass" style={{ padding:'10px', fontSize:'13px' }} />
         </div>
 
         {/* Run button */}

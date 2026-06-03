@@ -242,6 +242,7 @@ class BacktestRequest(BaseModel):
     interval: str = "day"                 # day | 60minute | 30minute | 15minute | 5minute
     days: int = 30
     initial_capital: float = 100000.0
+    lots: int = 1
 
 class TelegramBacktestReportRequest(BaseModel):
     strategy_name: str
@@ -429,6 +430,22 @@ async def get_instance_option_chain(id: int, session: Session = Depends(get_sess
     data = await engine_instance.get_live_option_chain(inst.symbol, inst)
     return data
 
+def get_base_lot_size(symbol: str) -> int:
+    """
+    Returns the standard lot size for index options/futures or 1 for individual stocks.
+    """
+    symbol_upper = symbol.upper()
+    if "NIFTY BANK" in symbol_upper or "BANKNIFTY" in symbol_upper:
+        return 15
+    elif "FINNIFTY" in symbol_upper:
+        return 40
+    elif "NIFTY" in symbol_upper:
+        return 50
+    elif "SENSEX" in symbol_upper:
+        return 10
+    else:
+        return 1
+
 # ── ORB Backtest Helper ─────────────────────────────────────────────────────
 
 def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session):
@@ -475,6 +492,13 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
 
     # ORB always uses the underlying index, not options — breakout is on spot
     symbol = config.get("symbols", [payload.symbol])[0]
+
+    # Override quantity if lots is specified
+    if payload.lots > 0:
+        if "action" not in config:
+            config["action"] = {}
+        base_lot = get_base_lot_size(symbol)
+        config["action"]["quantity"] = payload.lots * base_lot
 
     # Determine date range — force intraday 1-min for ORB
     is_single = bool(payload.single_day)
@@ -667,7 +691,12 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
     exit_rules   = config.get("rules", {}).get("exit",   {})
     sl_limit     = float(config.get("sl_pct",    4.0))
     target_limit = float(config.get("target_pct", 8.0))
-    qty          = int(config.get("quantity", 50))
+    
+    if payload.lots > 0:
+        base_lot = get_base_lot_size(payload.symbol)
+        qty = payload.lots * base_lot
+    else:
+        qty = int(config.get("quantity", 50))
 
     for t in range(warmup, len(df)):
         row_t    = df.iloc[t]
