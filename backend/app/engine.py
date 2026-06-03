@@ -1447,7 +1447,7 @@ class ExecutionEngine:
                     trigger_buy = True
                     selected_type = "CE"
                     selected_strike = state.selected_ce_strike
-                    est_prem = current_ce_premium
+                    est_prem = state.ce_option_opening_high
                     state.breakout_direction = "BULLISH"
 
             # Double breakout trigger PE
@@ -1456,7 +1456,7 @@ class ExecutionEngine:
                     trigger_buy = True
                     selected_type = "PE"
                     selected_strike = state.selected_pe_strike
-                    est_prem = current_pe_premium
+                    est_prem = state.pe_option_opening_high
                     state.breakout_direction = "BEARISH"
 
             if trigger_buy:
