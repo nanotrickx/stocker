@@ -4,7 +4,7 @@ from app.brokers.base import BaseBroker
 
 logger = logging.getLogger("Stocker.Brokers.Dhan")
 
-def get_totp(secret: str) -> str:
+def get_totp(secret: str, time_offset: int = 0) -> str:
     import time
     import hmac
     import hashlib
@@ -14,7 +14,7 @@ def get_totp(secret: str) -> str:
         secret = secret.replace(" ", "")
         secret = secret + '=' * ((8 - len(secret) % 8) % 8)
         key = base64.b32decode(secret, casefold=True)
-        intervals_no = int(time.time() // 30)
+        intervals_no = int((time.time() + time_offset) // 30)
         msg = struct.pack(">Q", intervals_no)
         h = hmac.new(key, msg, hashlib.sha1).digest()
         o = h[19] & 15
@@ -24,39 +24,52 @@ def get_totp(secret: str) -> str:
         logger.error(f"Error generating TOTP in get_totp: {e}")
         return ""
 
+def request_dhan_access_token(client_id: str, pin: str, totp_secret: str) -> Optional[str]:
+    import requests
+    # Try current time, then 30s back, then 30s forward, then -60s, +60s to handle clock skew
+    for offset in [0, -30, 30, -60, 60]:
+        totp_code = get_totp(totp_secret, time_offset=offset)
+        if not totp_code:
+            continue
+        try:
+            url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={client_id}&pin={pin}&totp={totp_code}"
+            resp = requests.post(url, timeout=15)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                gen_token = res_json.get("accessToken") or res_json.get("access_token")
+                if gen_token:
+                    if offset != 0:
+                        logger.info(f"🟢 Dhan Access Token generated with clock skew offset {offset}s!")
+                    return gen_token
+                else:
+                    msg = res_json.get('message') or str(res_json)
+                    logger.warning(f"Dhan token attempt with offset {offset}s returned: {msg}")
+            else:
+                logger.warning(f"Dhan token attempt with offset {offset}s returned status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Dhan token attempt with offset {offset}s failed with error: {e}")
+    return None
+
 def get_dhan_token(active_cred: Any, session: Any) -> Optional[str]:
     if active_cred.broker_name == "dhan":
         if active_cred.totp_secret and len(active_cred.totp_secret.strip()) > 4:
             from datetime import date
-            import time
             from app.database import now_ist
-            import requests
             
             today = now_ist().date()
             token_date = active_cred.updated_at.date() if active_cred.updated_at else None
             
             if not active_cred.access_token or token_date != today:
-                try:
-                    totp_code = get_totp(active_cred.totp_secret)
-                    if totp_code:
-                        url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={active_cred.api_key}&pin={active_cred.api_secret}&totp={totp_code}"
-                        resp = requests.post(url, timeout=10)
-                        if resp.status_code == 200:
-                            res_json = resp.json()
-                            gen_token = res_json.get("accessToken") or res_json.get("access_token")
-                            if gen_token:
-                                active_cred.access_token = gen_token
-                                active_cred.updated_at = now_ist()
-                                session.add(active_cred)
-                                session.commit()
-                                logger.info("🟢 Programmatically auto-renewed Dhan access token for today.")
-                                return gen_token
-                            else:
-                                logger.error(f"🔴 Auto-renewal of Dhan token failed: Server returned error message: {res_json.get('message') or res_json}")
-                        else:
-                            logger.error(f"🔴 Auto-renewal of Dhan token failed: {resp.status_code} - {resp.text}")
-                except Exception as e:
-                    logger.error(f"🔴 Error auto-renewing Dhan token: {e}")
+                gen_token = request_dhan_access_token(active_cred.api_key, active_cred.api_secret, active_cred.totp_secret)
+                if gen_token:
+                    active_cred.access_token = gen_token
+                    active_cred.updated_at = now_ist()
+                    session.add(active_cred)
+                    session.commit()
+                    logger.info("🟢 Programmatically auto-renewed Dhan access token for today.")
+                    return gen_token
+                else:
+                    logger.error("🔴 Auto-renewal of Dhan token failed: All TOTP clock skew offsets exhausted.")
         
         return active_cred.access_token or active_cred.api_secret
     return None
@@ -77,44 +90,51 @@ class DhanBroker(BaseBroker):
         self.access_token = credentials.get("access_token")
         
         totp_sec = credentials.get("totp_secret")
-        if totp_sec and len(totp_sec.strip()) > 4:
-            totp_code = get_totp(totp_sec)
-            pin_code = credentials.get("api_secret")
-            if totp_code and pin_code:
+        pin_code = credentials.get("api_secret")
+        
+        need_token_gen = True
+        if self.access_token:
+            try:
+                from app.database import engine as db_engine, BrokerCredential, now_ist
+                from sqlmodel import Session, select
+                with Session(db_engine) as session:
+                    statement = select(BrokerCredential).where(
+                        BrokerCredential.broker_name == "dhan",
+                        BrokerCredential.api_key == self.client_id
+                    )
+                    cred = session.exec(statement).first()
+                    if cred and cred.access_token == self.access_token and cred.updated_at:
+                        if cred.updated_at.date() == now_ist().date():
+                            need_token_gen = False
+                            logger.info("🟢 Active Dhan token in DB is already fresh for today. Skipping TOTP login.")
+            except Exception as db_err:
+                logger.warning(f"Failed to check token freshness in database during login: {db_err}")
+
+        if need_token_gen and totp_sec and len(totp_sec.strip()) > 4 and pin_code:
+            gen_token = request_dhan_access_token(self.client_id, pin_code, totp_sec)
+            if gen_token:
+                self.access_token = gen_token
+                logger.info("🟢 Automatically generated fresh Dhan Access Token via TOTP!")
                 try:
-                    import requests
-                    url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId={self.client_id}&pin={pin_code}&totp={totp_code}"
-                    resp = requests.post(url, timeout=15)
-                    if resp.status_code == 200:
-                        res_json = resp.json()
-                        gen_token = res_json.get("accessToken") or res_json.get("access_token")
-                        if gen_token:
-                            self.access_token = gen_token
-                            logger.info("🟢 Automatically generated fresh Dhan Access Token via TOTP!")
-                            try:
-                                from app.database import engine as db_engine, BrokerCredential
-                                from sqlmodel import Session, select
-                                from app.database import now_ist
-                                with Session(db_engine) as session:
-                                    statement = select(BrokerCredential).where(
-                                        BrokerCredential.broker_name == "dhan",
-                                        BrokerCredential.api_key == self.client_id
-                                    )
-                                    cred = session.exec(statement).first()
-                                    if cred:
-                                        cred.access_token = gen_token
-                                        cred.updated_at = now_ist()
-                                        session.add(cred)
-                                        session.commit()
-                                        logger.info("💾 Successfully saved fresh Dhan Access Token to SQLite database.")
-                            except Exception as db_err:
-                                logger.error(f"🔴 Failed to save renewed Dhan token to database: {db_err}")
-                        else:
-                            logger.error(f"🔴 Dhan token generation failed: Server returned error message: {res_json.get('message') or res_json}")
-                    else:
-                        logger.error(f"🔴 Dhan token generation failed: {resp.status_code} - {resp.text}")
-                except Exception as e:
-                    logger.error(f"🔴 Error communicating with Dhan Auth server: {e}")
+                    from app.database import engine as db_engine, BrokerCredential
+                    from sqlmodel import Session, select
+                    from app.database import now_ist
+                    with Session(db_engine) as session:
+                        statement = select(BrokerCredential).where(
+                            BrokerCredential.broker_name == "dhan",
+                            BrokerCredential.api_key == self.client_id
+                        )
+                        cred = session.exec(statement).first()
+                        if cred:
+                            cred.access_token = gen_token
+                            cred.updated_at = now_ist()
+                            session.add(cred)
+                            session.commit()
+                            logger.info("💾 Successfully saved fresh Dhan Access Token to SQLite database.")
+                except Exception as db_err:
+                    logger.error(f"🔴 Failed to save renewed Dhan token to database: {db_err}")
+            else:
+                logger.error("🔴 Dhan token generation failed: All TOTP clock skew offsets exhausted.")
         
         if not self.access_token:
             self.access_token = credentials.get("api_secret")

@@ -131,6 +131,18 @@ class ExecutionEngine:
                     except Exception as e:
                         return False, f"Alice Blue API session is inactive or expired: {e}"
                         
+                elif broker_name == "dhan":
+                    dhan_broker = self.broker_clients.get("DHAN")
+                    if not dhan_broker or not dhan_broker.access_token:
+                        return False, "Dhan client is not initialized or access token is missing."
+                    try:
+                        profile = await dhan_broker.get_profile()
+                        if profile and profile.get("status") != "ERROR":
+                            return True, "Dhan connection is active and healthy."
+                        return False, f"Dhan API returned unhealthy state: {profile}"
+                    except Exception as e:
+                        return False, f"Dhan API connection error during health check: {e}"
+
                 elif broker_name == "paper":
                     return True, "Paper trading sandbox environment is active."
                     
@@ -890,6 +902,19 @@ class ExecutionEngine:
             logger.warning(f"Could not init Kite client: {e}")
         return None
 
+    def _sync_active_broker_token(self, active_cred: BrokerCredential, session: Session) -> str:
+        """Helper to ensure active broker's token is fresh in DB and synced in-memory."""
+        broker_name = active_cred.broker_name.upper()
+        if broker_name == "DHAN":
+            from app.brokers.dhan import get_dhan_token
+            fresh_token = get_dhan_token(active_cred, session)
+            dhan_broker = self.broker_clients.get("DHAN")
+            if dhan_broker and fresh_token and dhan_broker.access_token != fresh_token:
+                logger.info("Dhan token has changed or renewed. Updating in-memory Dhan broker token...")
+                dhan_broker.access_token = fresh_token
+            return "DHAN"
+        return broker_name
+
     async def fetch_live_spot(self, symbol: str, strategy: Optional[StrategyInstance] = None) -> float:
         """
         Fetch real-time LTP from the active broker (Dhan or Zerodha).
@@ -912,25 +937,25 @@ class ExecutionEngine:
                     BrokerCredential.active == True
                 )).first()
 
-            if active_cred:
-                broker_name = active_cred.broker_name.upper()
-                if broker_name == "DHAN":
-                    dhan_broker = self.broker_clients.get("DHAN")
-                    if dhan_broker and dhan_broker.access_token:
-                        val = await dhan_broker.get_ltp(symbol)
-                        val_float = float(val)
-                        self.ltp_cache[symbol] = (val_float, now_time_check)
-                        return val_float
-                elif broker_name == "KITE":
-                    kite = self._get_kite_client()
-                    if kite:
-                        loop = asyncio.get_event_loop()
-                        ltp_key = symbol if ":" in symbol else f"NSE:{symbol}"
-                        ltp_res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
-                        if ltp_res and ltp_key in ltp_res:
-                            val_float = float(ltp_res[ltp_key]["last_price"])
+                if active_cred:
+                    broker_name = self._sync_active_broker_token(active_cred, session)
+                    if broker_name == "DHAN":
+                        dhan_broker = self.broker_clients.get("DHAN")
+                        if dhan_broker and dhan_broker.access_token:
+                            val = await dhan_broker.get_ltp(symbol)
+                            val_float = float(val)
                             self.ltp_cache[symbol] = (val_float, now_time_check)
                             return val_float
+                    elif broker_name == "KITE":
+                        kite = self._get_kite_client()
+                        if kite:
+                            loop = asyncio.get_event_loop()
+                            ltp_key = symbol if ":" in symbol else f"NSE:{symbol}"
+                            ltp_res = await loop.run_in_executor(None, lambda: kite.ltp([ltp_key]))
+                            if ltp_res and ltp_key in ltp_res:
+                                val_float = float(ltp_res[ltp_key]["last_price"])
+                                self.ltp_cache[symbol] = (val_float, now_time_check)
+                                return val_float
         except Exception as e:
             logger.error(f"LTP fetch failed for active broker: {e}")
             self._kite_client = None  # reset on error
@@ -998,11 +1023,11 @@ class ExecutionEngine:
                     BrokerCredential.active == True
                 )).first()
 
-            if not active_cred:
-                logger.error("get_live_option_premiums: No active broker credentials found.")
-                return res
+                if not active_cred:
+                    logger.error("get_live_option_premiums: No active broker credentials found.")
+                    return res
 
-            broker_name = active_cred.broker_name.upper()
+                broker_name = self._sync_active_broker_token(active_cred, session)
             nearest_expiry_date = await self.get_nearest_option_expiry(underlying_symbol)
 
             if broker_name == "DHAN":
@@ -1122,8 +1147,8 @@ class ExecutionEngine:
                     BrokerCredential.broker_name != "telegram",
                     BrokerCredential.active == True
                 )).first()
-            if active_cred:
-                active_broker = active_cred.broker_name.upper()
+                if active_cred:
+                    active_broker = self._sync_active_broker_token(active_cred, session)
         except Exception as db_err:
             logger.debug(f"Failed to query active broker in option chain fetch: {db_err}")
 
