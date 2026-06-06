@@ -126,8 +126,10 @@ export default function StockerDashboard() {
 
   // Global theme state
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     if (typeof window !== 'undefined') {
       const savedTheme = localStorage.getItem('stocker-theme') as 'dark' | 'light' || 'dark';
       setTheme(savedTheme);
@@ -774,6 +776,16 @@ export default function StockerDashboard() {
       alert('Error communicating with execution engine.');
     }
   };
+
+  if (!mounted) {
+    return (
+      <div className="app-container" style={{ background: '#0B0F19', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="glow-green" style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'monospace', letterSpacing: '0.1em' }}>
+          LOADING STOCKER TERM...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">

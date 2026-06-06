@@ -304,6 +304,16 @@ class CredentialUpdate(BaseModel):
     api_secret: str
     totp_secret: Optional[str] = None
 
+class GlobalSettingsUpdate(BaseModel):
+    risk_max_daily_loss: float
+    risk_max_active_positions: int
+    risk_auto_square_off_time: str
+    risk_default_slippage: float
+    notify_order_placement: bool
+    notify_order_execution: bool
+    notify_sl_target_hit: bool
+    notify_daily_summary: bool
+
 class InstanceCreate(BaseModel):
     template_id: str
     symbol: str = "NSE:NIFTY 50"
@@ -1492,6 +1502,63 @@ async def select_active_broker(broker_name: str, session: Session = Depends(get_
         }))
         
     return {"status": "SUCCESS", "active_broker": broker_name}
+
+@app.get("/api/settings/global")
+def get_global_settings(session: Session = Depends(get_session)):
+    from app.database import SystemState
+    
+    def get_val(key: str, default: str) -> str:
+        state = session.get(SystemState, key)
+        return state.value if state else default
+
+    return {
+        "risk_max_daily_loss": float(get_val("risk_max_daily_loss", "0")),
+        "risk_max_active_positions": int(get_val("risk_max_active_positions", "0")),
+        "risk_auto_square_off_time": get_val("risk_auto_square_off_time", ""),
+        "risk_default_slippage": float(get_val("risk_default_slippage", "0.0")),
+        "notify_order_placement": get_val("notify_order_placement", "true").lower() == "true",
+        "notify_order_execution": get_val("notify_order_execution", "true").lower() == "true",
+        "notify_sl_target_hit": get_val("notify_sl_target_hit", "true").lower() == "true",
+        "notify_daily_summary": get_val("notify_daily_summary", "true").lower() == "true",
+    }
+
+@app.post("/api/settings/global")
+def save_global_settings(data: GlobalSettingsUpdate, session: Session = Depends(get_session)):
+    from app.database import SystemState
+    from app.database import now_ist
+    
+    settings_dict = {
+        "risk_max_daily_loss": str(data.risk_max_daily_loss),
+        "risk_max_active_positions": str(data.risk_max_active_positions),
+        "risk_auto_square_off_time": str(data.risk_auto_square_off_time),
+        "risk_default_slippage": str(data.risk_default_slippage),
+        "notify_order_placement": "true" if data.notify_order_placement else "false",
+        "notify_order_execution": "true" if data.notify_order_execution else "false",
+        "notify_sl_target_hit": "true" if data.notify_sl_target_hit else "false",
+        "notify_daily_summary": "true" if data.notify_daily_summary else "false",
+    }
+    
+    for key, value in settings_dict.items():
+        state = session.get(SystemState, key)
+        if state:
+            state.value = value
+            state.updated_at = now_ist()
+        else:
+            state = SystemState(key=key, value=value)
+        session.add(state)
+        
+    session.commit()
+    return {"status": "SUCCESS"}
+
+@app.post("/api/broker/test-connection")
+async def test_broker_connection():
+    is_healthy, message = await engine_instance.check_broker_health()
+    return {
+        "status": "SUCCESS" if is_healthy else "ERROR",
+        "healthy": is_healthy,
+        "message": message
+    }
+
 
 
 class ZerodhaLoginRequest(BaseModel):

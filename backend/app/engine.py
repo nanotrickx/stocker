@@ -175,6 +175,95 @@ class ExecutionEngine:
         except Exception as e:
             logger.warning(f"Error setting system state for {key}: {e}")
 
+    async def is_under_risk_limits(self) -> Tuple[bool, str]:
+        """
+        Check global safety controls:
+        - Max daily loss limit (realized P&L from closed trades today)
+        - Max active positions (count of currently open trades)
+        - Auto square-off time boundary
+        Returns (is_allowed, reason_why_blocked)
+        """
+        now = now_ist()
+        now_time = now.time()
+        
+        # 1. Check Auto-Square Off Time
+        auto_square_off_str = self._get_system_state("risk_auto_square_off_time")
+        if auto_square_off_str:
+            try:
+                h, m = map(int, auto_square_off_str.split(":"))
+                square_off_time = time(h, m)
+                if now_time >= square_off_time:
+                    return False, f"Auto-Squareoff time ({auto_square_off_str}) has been reached."
+            except Exception as e:
+                logger.error(f"Error parsing auto-square off time: {e}")
+
+        # 2. Check Max Active Positions
+        max_active_positions_str = self._get_system_state("risk_max_active_positions")
+        if max_active_positions_str:
+            try:
+                max_active = int(max_active_positions_str)
+                if max_active > 0:
+                    with Session(db_engine) as session:
+                        open_trades_count = len(session.exec(select(Trade).where(Trade.status == "OPEN")).all())
+                        if open_trades_count >= max_active:
+                            return False, f"Max active positions limit ({max_active}) reached."
+            except Exception as e:
+                logger.error(f"Error checking max active positions limit: {e}")
+
+        # 3. Check Max Daily Loss Limit
+        max_daily_loss_str = self._get_system_state("risk_max_daily_loss")
+        if max_daily_loss_str:
+            try:
+                max_loss = float(max_daily_loss_str)
+                if max_loss > 0:
+                    today_start = datetime.combine(now.date(), time.min, tzinfo=IST)
+                    today_end = datetime.combine(now.date(), time.max, tzinfo=IST)
+                    with Session(db_engine) as session:
+                        trades = session.exec(select(Trade).where(
+                            Trade.exit_time >= today_start,
+                            Trade.exit_time <= today_end,
+                            Trade.status == "CLOSED"
+                        )).all()
+                        realized_pnl = sum((t.pnl or 0.0) for t in trades)
+                        if realized_pnl <= -max_loss:
+                            return False, f"Max daily loss limit (₹{max_loss:.2f}) breached (Realized: ₹{realized_pnl:.2f})."
+            except Exception as e:
+                logger.error(f"Error checking max daily loss limit: {e}")
+                
+        return True, ""
+
+    async def send_telegram_alert(self, message: str, event_type: str) -> bool:
+        """
+        Send Telegram message if the corresponding notification preference is enabled.
+        event_type can be:
+        - 'placement': notify_order_placement
+        - 'execution': notify_order_execution
+        - 'sl_target': notify_sl_target_hit
+        - 'summary': notify_daily_summary
+        - 'system': system notifications (always sent)
+        """
+        if not self.telegram_bot:
+            return False
+            
+        flag_map = {
+            "placement": "notify_order_placement",
+            "execution": "notify_order_execution",
+            "sl_target": "notify_sl_target_hit",
+            "summary": "notify_daily_summary"
+        }
+        
+        if event_type in flag_map:
+            flag_key = flag_map[event_type]
+            pref = self._get_system_state(flag_key)
+            if pref is not None and pref.lower() == "false":
+                logger.info(f"Skipping Telegram notification of type '{event_type}' due to preference setting.")
+                return False
+                
+        await self.telegram_bot.send_message(message)
+        return True
+
+
+
     def get_or_create_orb_state(self, strategy: StrategyInstance, config: dict, spot: float = 0.0) -> ORBState:
         now = now_ist()
         sid = strategy.id
@@ -565,7 +654,7 @@ class ExecutionEngine:
                 )
                 if candles:
                     logger.info(f"Successfully loaded {len(candles)} real candles from Dhan.")
-                    dates = [c["timestamp"] for c in candles]
+                    dates = [c["date"] for c in candles]
                     df = pd.DataFrame({
                         "open": [float(c["open"]) for c in candles],
                         "high": [float(c["high"]) for c in candles],
@@ -589,6 +678,21 @@ class ExecutionEngine:
 
     async def evaluate_strategy_entry(self, strategy: StrategyInstance, last_price: float):
         """Evaluates entry conditions for a strategy if no active positions exist."""
+        # Check global risk limits first
+        is_allowed, block_reason = await self.is_under_risk_limits()
+        if not is_allowed:
+            already_logged = any(
+                log["strategy_id"] == strategy.id and "Risk limit breached" in log["message"]
+                for log in self.strategy_logs
+            )
+            if not already_logged:
+                self.log_strategy_activity(
+                    strategy.id,
+                    strategy.name,
+                    f"[RISK] Risk limit breached: {block_reason} Entry blocked."
+                )
+            return
+
         config = strategy.get_config()
         if not config:
             return
@@ -697,16 +801,16 @@ class ExecutionEngine:
                     strategy.name,
                     f"[TRIGGER] BUY entry hit! Symbol: {trade.symbol} @ ₹{trade.entry_price} (Qty: {trade.quantity} | Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
                 )
-                if self.telegram_bot:
-                    await self.telegram_bot.send_message(
-                        f"🟢 <b>BUY TRIGGERED</b>\n\n"
-                        f"<b>Strategy:</b> {strategy.name}\n"
-                        f"<b>Symbol:</b> {trade.symbol}\n"
-                        f"<b>Entry Price:</b> ₹{trade.entry_price}\n"
-                        f"<b>Qty:</b> {trade.quantity}\n"
-                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
-                        f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
-                    )
+                await self.send_telegram_alert(
+                    f"🟢 <b>BUY TRIGGERED</b>\n\n"
+                    f"<b>Strategy:</b> {strategy.name}\n"
+                    f"<b>Symbol:</b> {trade.symbol}\n"
+                    f"<b>Entry Price:</b> ₹{trade.entry_price}\n"
+                    f"<b>Qty:</b> {trade.quantity}\n"
+                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
+                    f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}",
+                    "placement"
+                )
 
     async def force_exit_trade(self, trade_id: int, reason: str = "MANUAL_FORCE_EXIT") -> bool:
         """Manually forces a sell order and closes an active position by ID."""
@@ -767,20 +871,20 @@ class ExecutionEngine:
                     session.commit()
                 
                 # Notify on Telegram
-                if self.telegram_bot:
-                    pnl_color = "🟢" if closed_trade.pnl >= 0 else "🔴"
-                    pct_pnl = ((closed_trade.exit_price - closed_trade.entry_price) / closed_trade.entry_price) * 100
-                    await self.telegram_bot.send_message(
-                        f"🛑 <b>MANUAL FORCE EXIT TRIGGERED</b>\n\n"
-                        f"<b>Strategy:</b> {strategy.name}\n"
-                        f"<b>Symbol:</b> {closed_trade.symbol}\n"
-                        f"<b>Exit Price:</b> ₹{closed_trade.exit_price} (Entry: ₹{closed_trade.entry_price})\n"
-                        f"<b>Qty:</b> {closed_trade.quantity}\n"
-                        f"<b>PnL:</b> ₹{round(closed_trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
-                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
-                        f"🕐 <b>Buy Time (IST):</b> {closed_trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
-                        f"🕐 <b>Sell Time (IST):</b> {closed_trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
-                    )
+                pnl_color = "🟢" if closed_trade.pnl >= 0 else "🔴"
+                pct_pnl = ((closed_trade.exit_price - closed_trade.entry_price) / closed_trade.entry_price) * 100
+                await self.send_telegram_alert(
+                    f"🛑 <b>MANUAL FORCE EXIT TRIGGERED</b>\n\n"
+                    f"<b>Strategy:</b> {strategy.name}\n"
+                    f"<b>Symbol:</b> {closed_trade.symbol}\n"
+                    f"<b>Exit Price:</b> ₹{closed_trade.exit_price} (Entry: ₹{closed_trade.entry_price})\n"
+                    f"<b>Qty:</b> {closed_trade.quantity}\n"
+                    f"<b>PnL:</b> ₹{round(closed_trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
+                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
+                    f"🕐 <b>Buy Time (IST):</b> {closed_trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
+                    f"🕐 <b>Sell Time (IST):</b> {closed_trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}",
+                    "execution"
+                )
                 return True
             return False
 
@@ -934,18 +1038,19 @@ class ExecutionEngine:
 
                 pnl_color = "🟢" if trade.pnl >= 0 else "🔴"
                 # Send immediate Telegram Notification
-                if self.telegram_bot:
-                    await self.telegram_bot.send_message(
-                        f"{pnl_color} <b>SELL TRIGGERED ({reason})</b>\n\n"
-                        f"<b>Strategy:</b> {strategy.name}\n"
-                        f"<b>Symbol:</b> {trade.symbol}\n"
-                        f"<b>Exit Price:</b> ₹{trade.exit_price} (Entry: ₹{trade.entry_price})\n"
-                        f"<b>Qty:</b> {trade.quantity}\n"
-                        f"<b>PnL:</b> ₹{round(trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
-                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
-                        f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
-                        f"🕐 <b>Sell Time (IST):</b> {trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}"
-                    )
+                alert_type = "sl_target" if reason in ("STOP_LOSS", "TARGET", "TRAILING_STOP_LOSS") else "execution"
+                await self.send_telegram_alert(
+                    f"{pnl_color} <b>SELL TRIGGERED ({reason})</b>\n\n"
+                    f"<b>Strategy:</b> {strategy.name}\n"
+                    f"<b>Symbol:</b> {trade.symbol}\n"
+                    f"<b>Exit Price:</b> ₹{trade.exit_price} (Entry: ₹{trade.entry_price})\n"
+                    f"<b>Qty:</b> {trade.quantity}\n"
+                    f"<b>PnL:</b> ₹{round(trade.pnl, 2)} ({round(pct_pnl, 2)}%)\n"
+                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n"
+                    f"🕐 <b>Buy Time (IST):</b> {trade.entry_time.strftime('%d-%b-%Y %I:%M:%S %p')}\n"
+                    f"🕐 <b>Sell Time (IST):</b> {trade.exit_time.strftime('%d-%b-%Y %I:%M:%S %p')}",
+                    alert_type
+                )
 
     # ── Real-time LTP from Kite ─────────────────────────────────────────
 
@@ -1564,6 +1669,22 @@ class ExecutionEngine:
         if state.phase == "DONE":
             return
 
+        # Check global risk limits first (only if we are not already in a position)
+        if state.phase != "IN_POSITION":
+            is_allowed, block_reason = await self.is_under_risk_limits()
+            if not is_allowed:
+                already_logged = any(
+                    log["strategy_id"] == strategy.id and "Risk limit breached" in log["message"]
+                    for log in self.strategy_logs
+                )
+                if not already_logged:
+                    self.log_strategy_activity(
+                        strategy.id,
+                        strategy.name,
+                        f"[RISK] Risk limit breached: {block_reason} Entry blocked."
+                    )
+                return
+
         # ── Phase: WAITING_OPENING_CANDLE ──
         if state.phase == "WAITING_OPENING_CANDLE":
             self.log_strategy_activity(
@@ -1826,24 +1947,24 @@ class ExecutionEngine:
                         f"[TRIGGER] BUY entry hit! Direction: {state.breakout_direction} Option: {state.selected_strike} {state.selected_option_type} @ ₹{est_prem:.2f} (Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
                     )
                     logger.info(f"🚀 ORB [{strategy.name}] BUY {state.selected_strike} {state.selected_option_type} @ ₹{est_prem}")
-                    if self.telegram_bot:
-                        ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
-                        await self.telegram_bot.send_message(
-                            f"🟢 <b>ORB DOUBLE BREAKOUT BUY</b>\n\n"
-                            f"<b>Strategy:</b> {strategy.name}\n"
-                            f"<b>Direction:</b> {state.breakout_direction}\n"
-                            f"<b>Option:</b> {state.selected_strike} {state.selected_option_type}\n"
-                            f"<b>Entry Price:</b> ₹{est_prem}\n"
-                            f"<b>Target (Target Price):</b> ₹{state.target_price} (+{current_target_pct}%)\n"
-                            f"<b>Stop Loss:</b> ₹{state.stop_loss_price} (-{sl_pct}%)\n"
-                            f"⏰ <b>Trigger Time (IST):</b> {ts_str}\n"
-                            f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
-                            f"📊 <b>Strategy Details (First Candle):</b>\n"
-                            f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
-                            f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
-                            f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
-                            f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>"
-                        )
+                    ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
+                    await self.send_telegram_alert(
+                        f"🟢 <b>ORB DOUBLE BREAKOUT BUY</b>\n\n"
+                        f"<b>Strategy:</b> {strategy.name}\n"
+                        f"<b>Direction:</b> {state.breakout_direction}\n"
+                        f"<b>Option:</b> {state.selected_strike} {state.selected_option_type}\n"
+                        f"<b>Entry Price:</b> ₹{est_prem}\n"
+                        f"<b>Target (Target Price):</b> ₹{state.target_price} (+{current_target_pct}%)\n"
+                        f"<b>Stop Loss:</b> ₹{state.stop_loss_price} (-{sl_pct}%)\n"
+                        f"⏰ <b>Trigger Time (IST):</b> {ts_str}\n"
+                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
+                        f"📊 <b>Strategy Details (First Candle):</b>\n"
+                        f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
+                        f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
+                        f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
+                        f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>",
+                        "placement"
+                    )
 
         # ── Phase: IN_POSITION ──
         elif state.phase == "IN_POSITION":
@@ -1930,24 +2051,25 @@ class ExecutionEngine:
                     f"[TRIGGER] EXIT triggered! Reason: {exit_reason} | Executed at: ₹{exit_price:.2f} | Trade P&L: ₹{trade_pnl:.2f}"
                 )
                 logger.info(f"{pnl_icon} ORB [{strategy.name}] {exit_reason} @ ₹{exit_price} Trade P&L: ₹{trade_pnl:.2f}")
-                if self.telegram_bot:
-                    ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
-                    await self.telegram_bot.send_message(
-                        f"{pnl_icon} <b>ORB {exit_reason} TRIGGERED</b>\n\n"
-                        f"<b>Strategy:</b> {strategy.name}\n"
-                        f"<b>Exit Price:</b> ₹{exit_price} (Entry: ₹{state.entry_price})\n"
-                        f"<b>Trade P&L:</b> ₹{round(trade_pnl, 2)}\n"
-                        f"<b>Total P&L Today:</b> ₹{round(state.pnl, 2)}\n"
-                        f"🕐 <b>Trigger/Buy Time (IST):</b> {state.entry_time}\n"
-                        f"🕐 <b>Exit/Sell Time (IST):</b> {ts_str}\n"
-                        f"<b>Next Phase Status:</b> {state.phase}\n"
-                        f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
-                        f"📊 <b>Strategy Details (First Candle):</b>\n"
-                        f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
-                        f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
-                        f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
-                        f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>"
-                    )
+                alert_type = "sl_target" if exit_reason in ("STOP_LOSS", "TARGET") else "execution"
+                ts_str = now.strftime("%d-%b-%Y %I:%M:%S %p")
+                await self.send_telegram_alert(
+                    f"{pnl_icon} <b>ORB {exit_reason} TRIGGERED</b>\n\n"
+                    f"<b>Strategy:</b> {strategy.name}\n"
+                    f"<b>Exit Price:</b> ₹{exit_price} (Entry: ₹{state.entry_price})\n"
+                    f"<b>Trade P&L:</b> ₹{round(trade_pnl, 2)}\n"
+                    f"<b>Total P&L Today:</b> ₹{round(state.pnl, 2)}\n"
+                    f"🕐 <b>Trigger/Buy Time (IST):</b> {state.entry_time}\n"
+                    f"<b>Exit/Sell Time (IST):</b> {ts_str}\n"
+                    f"<b>Next Phase Status:</b> {state.phase}\n"
+                    f"<b>Mode:</b> {'PAPER' if strategy.paper_trade else 'LIVE'}\n\n"
+                    f"📊 <b>Strategy Details (First Candle):</b>\n"
+                    f"• Index Open Range High: <b>{state.opening_high:.2f}</b>\n"
+                    f"• Index Open Range Low: <b>{state.opening_low:.2f}</b>\n"
+                    f"• CE Option ({state.selected_ce_strike:.0f}) Open High: <b>₹{state.ce_option_opening_high:.2f}</b>\n"
+                    f"• PE Option ({state.selected_pe_strike:.0f}) Open High: <b>₹{state.pe_option_opening_high:.2f}</b>",
+                    alert_type
+                )
 
     async def _fetch_915_candle(self, symbol: str) -> Optional[Dict]:
         """Fetch the 9:15 opening candle from the active broker (Dhan or Zerodha) historical API."""
@@ -2066,10 +2188,30 @@ class ExecutionEngine:
                         if today_date not in self.daily_summary_sent and self._get_system_state(f"daily_summary_sent_{today_date}") != "true":
                             self.daily_summary_sent[today_date] = True
                             self._set_system_state(f"daily_summary_sent_{today_date}", "true")
-                            logger.info(f"Triggering automated DailySummary report generation for {today_date}...")
-                            await self.telegram_bot.generate_and_send_daily_summary(orb_states=self.orb_states)
+                            pref = self._get_system_state("notify_daily_summary")
+                            if pref is None or pref.lower() != "false":
+                                logger.info(f"Triggering automated DailySummary report generation for {today_date}...")
+                                await self.telegram_bot.generate_and_send_daily_summary(orb_states=self.orb_states)
+                            else:
+                                logger.info(f"Skipping EOD Telegram DailySummary report due to preference setting.")
 
                 is_holiday, holiday_reason = self.is_market_holiday_today()
+
+                # ── Global Auto-Square Off Check ──
+                auto_square_off_str = self._get_system_state("risk_auto_square_off_time")
+                if auto_square_off_str:
+                    try:
+                        h, m = map(int, auto_square_off_str.split(":"))
+                        square_off_time = time(h, m)
+                        if now_time >= square_off_time:
+                            with Session(db_engine) as session:
+                                open_trades = session.exec(select(Trade).where(Trade.status == "OPEN")).all()
+                                if open_trades:
+                                    logger.info(f"🕒 Auto-square off time ({auto_square_off_str}) reached. Closing {len(open_trades)} active positions...")
+                                    for t in open_trades:
+                                        await self.force_exit_trade(t.id, reason="AUTO_SQUARE_OFF")
+                    except Exception as e:
+                        logger.error(f"Error executing auto square off check in engine loop: {e}")
 
                 for strat_id, strategy in list(self.active_strategies.items()):
                     if is_holiday:
