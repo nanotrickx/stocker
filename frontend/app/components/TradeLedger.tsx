@@ -11,10 +11,10 @@ interface TradeLedgerProps {
 }
 
 const SELECT_STYLE: React.CSSProperties = {
-  background: 'rgba(0, 0, 0, 0.3)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
+  background: 'var(--sub-panel-bg)',
+  border: '1px solid var(--border-glass)',
   borderRadius: '6px',
-  color: '#fff',
+  color: 'var(--text-primary)',
   padding: '6px 12px',
   fontSize: '12px',
   outline: 'none',
@@ -73,7 +73,7 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
   };
 
   return (
-    <div className="glass-panel animate-slide-in" style={{ margin: '24px', padding: '24px' }}>
+    <div className="glass-panel responsive-container animate-slide-in" style={{ padding: '24px' }}>
       
       {/* Header Row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '16px' }}>
@@ -128,8 +128,8 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
             alignItems: 'center',
             marginBottom: '20px',
             padding: '12px 16px',
-            background: 'rgba(255, 255, 255, 0.02)',
-            border: '1px solid rgba(255, 255, 255, 0.05)',
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border-glass)',
             borderRadius: '8px',
             flexWrap: 'wrap',
           }}
@@ -180,7 +180,7 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
           <p style={{ fontSize: '14px' }}>No completed trade records found in the database ledger.</p>
         </div>
       ) : filteredTrades.length === 0 ? (
-        <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+        <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)', border: '1px dashed var(--border-glass)', borderRadius: '8px' }}>
           <Filter size={32} style={{ margin: '0 auto 12px auto', display: 'block', opacity: 0.3 }} />
           <p style={{ fontSize: '13px' }}>No trade ledger rows match the selected filters.</p>
         </div>
@@ -211,7 +211,7 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
               {filteredTrades.map((trade) => {
                 const isGain = (trade.pnl || 0) >= 0;
                 return (
-                  <tr key={trade.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                  <tr key={trade.id} style={{ borderBottom: '1px solid var(--border-glass-subtle)' }}>
                     <td>#{trade.id}</td>
                     <td style={{ fontWeight: 600 }}>{trade.strategy_name || trade.strategy_id}</td>
                     <td style={{ fontWeight: 700, fontFamily: 'monospace' }}>{trade.symbol}</td>
@@ -235,7 +235,7 @@ export default function TradeLedger({ tradeHistory, onClear, onSendTelegramLedge
                           borderRadius: '4px',
                           fontSize: '10px',
                           fontWeight: 600,
-                          background: trade.status === 'OPEN' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255,255,255,0.05)',
+                          background: trade.status === 'OPEN' ? 'rgba(245, 158, 11, 0.15)' : 'var(--glass-bg-medium)',
                           color: trade.status === 'OPEN' ? 'var(--accent-yellow)' : 'var(--text-secondary)',
                         }}
                       >

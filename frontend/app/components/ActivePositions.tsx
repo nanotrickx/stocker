@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Zap, ShieldAlert, XCircle } from 'lucide-react';
+import { Zap, ShieldAlert, XCircle, TrendingUp, TrendingDown } from 'lucide-react';
 import { Trade } from '../types';
 
 interface ActivePositionsProps {
@@ -11,7 +11,7 @@ interface ActivePositionsProps {
 
 export default function ActivePositions({ positions, onForceExit }: ActivePositionsProps) {
   return (
-    <div className="glass-panel" style={{ padding: '20px' }}>
+    <div className="glass-panel animate-slide-in" style={{ padding: '20px' }}>
       <h3 style={{ fontSize: '16px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
         <Zap size={16} style={{ color: 'var(--accent-yellow)' }} /> Active Positions
       </h3>
@@ -24,11 +24,22 @@ export default function ActivePositions({ positions, onForceExit }: ActivePositi
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {positions.map((pos) => {
+            const isProfit = (pos.pnl || 0) >= 0;
             return (
-              <div key={pos.id} className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div 
+                key={pos.id} 
+                className="glass-card glow-card-active" 
+                style={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '8px',
+                  borderLeft: isProfit ? '3px solid var(--accent-green)' : '3px solid var(--accent-red)',
+                  paddingLeft: '14px'
+                }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
-                    <span style={{ fontSize: '11px', background: pos.option_type === 'CE' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)', color: pos.option_type === 'CE' ? 'var(--accent-green)' : 'var(--accent-red)', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, marginRight: '6px' }}>
+                    <span style={{ fontSize: '10px', background: pos.option_type === 'CE' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)', color: pos.option_type === 'CE' ? 'var(--accent-green)' : 'var(--accent-red)', padding: '2px 6px', borderRadius: '4px', fontWeight: 700, marginRight: '6px' }}>
                       {pos.option_type || 'EQ'}
                     </span>
                     <strong style={{ fontSize: '14px', fontFamily: 'var(--font-display)' }}>{pos.symbol}</strong>
@@ -49,15 +60,19 @@ export default function ActivePositions({ positions, onForceExit }: ActivePositi
                     <button 
                       onClick={() => onForceExit(pos.id)} 
                       title="Force Exit Position" 
-                      className="hover-red" 
                       style={{ 
                         background: 'transparent', 
                         border: 'none', 
                         color: 'var(--accent-red)', 
                         display: 'flex', 
                         alignItems: 'center',
-                        cursor: 'pointer'
+                        cursor: 'pointer',
+                        padding: '4px',
+                        borderRadius: '4px',
+                        transition: 'all 0.15s ease'
                       }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(244, 63, 94, 0.1)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
                       <XCircle size={16} />
                     </button>
@@ -65,8 +80,8 @@ export default function ActivePositions({ positions, onForceExit }: ActivePositi
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginTop: '4px', color: 'var(--text-secondary)' }}>
-                  <span>Qty: <b>{pos.quantity}</b></span>
-                  <span>Avg Entry: <b>₹{pos.entry_price.toFixed(2)}</b></span>
+                  <span>Qty: <b style={{ color: 'var(--text-primary)' }}>{pos.quantity}</b></span>
+                  <span>Avg Entry: <b style={{ color: 'var(--text-primary)' }}>₹{pos.entry_price.toFixed(2)}</b></span>
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '10px' }}>
@@ -74,11 +89,18 @@ export default function ActivePositions({ positions, onForceExit }: ActivePositi
                     <p style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Strategy Engine</p>
                     <p style={{ fontSize: '11px', color: '#8B5CF6', fontWeight: 700 }}>{pos.strategy_id}</p>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
+                  <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
                     <p style={{ fontSize: '9px', color: 'var(--text-muted)' }}>Unrealized P&L</p>
-                    <strong style={{ fontSize: '15px' }} className={(pos.pnl || 0) >= 0 ? 'glow-green' : 'glow-red'}>
-                      ₹{(pos.pnl || 0.0).toFixed(2)}
-                    </strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      {isProfit ? (
+                        <TrendingUp size={14} style={{ color: 'var(--accent-green)' }} />
+                      ) : (
+                        <TrendingDown size={14} style={{ color: 'var(--accent-red)' }} />
+                      )}
+                      <strong style={{ fontSize: '15px' }} className={isProfit ? 'glow-green' : 'glow-red'}>
+                        ₹{(pos.pnl || 0.0).toFixed(2)}
+                      </strong>
+                    </div>
                   </div>
                 </div>
               </div>

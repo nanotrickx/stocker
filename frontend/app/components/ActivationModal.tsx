@@ -21,16 +21,8 @@ interface ActivationModalProps {
 }
 
 const GLASS_INPUT: React.CSSProperties = {
-  background: 'rgba(0, 0, 0, 0.4)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
-  borderRadius: '8px',
-  color: '#fff',
-  padding: '10px 12px',
-  fontSize: '13px',
-  outline: 'none',
   width: '100%',
   marginTop: '4px',
-  transition: 'border 0.2s',
 };
 
 const LABEL: React.CSSProperties = {
@@ -115,8 +107,8 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
         style={{
           width: '100%',
           maxWidth: '540px',
-          background: 'rgba(17, 12, 28, 0.85)',
-          border: '1px solid rgba(139, 92, 246, 0.25)',
+          background: 'var(--panel-glass)',
+          border: '1px solid var(--border-glass)',
           borderRadius: '16px',
           overflow: 'hidden',
           boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5), 0 0 50px rgba(139, 92, 246, 0.1)',
@@ -126,14 +118,14 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
         <div
           style={{
             padding: '20px 24px',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+            borderBottom: '1px solid var(--border-glass)',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
           }}
         >
           <div>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Play size={18} style={{ color: '#8B5CF6' }} /> Deploy Strategy Instance
             </h3>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
@@ -167,6 +159,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
               <select
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
+                className="input-glass"
                 style={GLASS_INPUT}
               >
                 <option value="NSE:NIFTY 50">NSE: NIFTY 50</option>
@@ -184,6 +177,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                 <select
                   value={instrumentType}
                   onChange={(e) => setInstrumentType(e.target.value)}
+                  className="input-glass"
                   style={GLASS_INPUT}
                 >
                   <option value="OPTION">Options (NFO)</option>
@@ -198,6 +192,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                   type="number"
                   value={quantity}
                   onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
+                  className="input-glass"
                   style={GLASS_INPUT}
                   min={1}
                 />
@@ -213,6 +208,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                   step="0.1"
                   value={slPct}
                   onChange={(e) => setSlPct(parseFloat(e.target.value) || 0.0)}
+                  className="input-glass"
                   style={GLASS_INPUT}
                   min={0.1}
                 />
@@ -225,6 +221,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                   step="0.1"
                   value={targetPct}
                   onChange={(e) => setTargetPct(parseFloat(e.target.value) || 0.0)}
+                  className="input-glass"
                   style={GLASS_INPUT}
                   min={0.1}
                 />
@@ -264,7 +261,8 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                       type="number"
                       value={premiumMin}
                       onChange={(e) => setPremiumMin(parseInt(e.target.value) || 0)}
-                      style={{ ...GLASS_INPUT, background: 'rgba(0,0,0,0.5)' }}
+                      className="input-glass"
+                      style={GLASS_INPUT}
                     />
                   </div>
 
@@ -274,7 +272,8 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                       type="number"
                       value={premiumMax}
                       onChange={(e) => setPremiumMax(parseInt(e.target.value) || 0)}
-                      style={{ ...GLASS_INPUT, background: 'rgba(0,0,0,0.5)' }}
+                      className="input-glass"
+                      style={GLASS_INPUT}
                     />
                   </div>
                 </div>
@@ -288,8 +287,8 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 padding: '12px 16px',
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.05)',
+                background: 'var(--card-bg)',
+                border: '1px solid var(--border-glass)',
                 borderRadius: '8px',
                 marginTop: '4px',
               }}
@@ -301,7 +300,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                   <Zap size={18} style={{ color: 'var(--accent-green)' }} />
                 )}
                 <div>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: '#fff', display: 'block' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
                     {paperTrade ? 'Paper Sandbox Mode' : 'Live Order Routing'}
                   </span>
                   <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
@@ -327,7 +326,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    background: !paperTrade ? 'var(--accent-green)' : 'rgba(255,255,255,0.1)',
+                    background: !paperTrade ? 'var(--accent-green)' : 'var(--glass-bg-accent)',
                     borderRadius: '34px',
                     transition: '0.3s',
                   }}
@@ -358,7 +357,7 @@ export default function ActivationModal({ strategy, onClose, onDeploy }: Activat
               justifyContent: 'flex-end',
               gap: '12px',
               marginTop: '28px',
-              borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+              borderTop: '1px solid var(--border-glass)',
               paddingTop: '20px',
             }}
           >

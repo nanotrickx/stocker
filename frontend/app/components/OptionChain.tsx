@@ -40,37 +40,66 @@ export default function OptionChain({ spotPrice, optionChain, onStrikeSelect }: 
           <tbody>
             {optionChain.map((item, idx) => {
               const isAtm = Math.abs(spotPrice - item.strike) < 50;
+              const isCallItm = item.strike < spotPrice;
+              const isPutItm = item.strike > spotPrice;
+              const callClass = isCallItm ? 'itm-call' : '';
+              const putClass = isPutItm ? 'itm-put' : '';
+              
               return (
-                <tr key={idx} style={{ background: isAtm ? 'rgba(99, 102, 241, 0.08)' : 'transparent' }}>
+                <tr key={idx} style={{ 
+                  background: isAtm ? 'rgba(99, 102, 241, 0.04)' : 'transparent',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.02)'
+                }}>
+                  {/* CE Side */}
                   <td 
+                    className={callClass}
                     onClick={() => {
-                      const strikeType = isAtm ? 'ATM' : (item.strike < spotPrice ? 'ITM' : 'OTM');
+                      const strikeType = isAtm ? 'ATM' : (isCallItm ? 'ITM' : 'OTM');
                       onStrikeSelect('CE', strikeType);
                     }} 
-                    style={{ color: 'var(--accent-green)', fontWeight: 600, cursor: 'pointer' }}
+                    style={{ color: 'var(--accent-green)', fontWeight: 700, cursor: 'pointer', verticalAlign: 'middle' }}
+                    title="Click to select this strike in custom builder"
                   >
                     ₹{item.ce.price.toFixed(2)}
                   </td>
-                  <td>{item.ce.delta.toFixed(2)}</td>
-                  <td>{item.ce.theta.toFixed(2)}</td>
-                  <td style={{ borderRight: '1px solid var(--border-glass)' }}>{item.ce.vega.toFixed(2)}</td>
-                  
-                  <td style={{ fontWeight: 800, background: 'rgba(255, 255, 255, 0.03)', color: isAtm ? '#8B5CF6' : 'var(--text-primary)' }}>
-                    {item.strike} {isAtm && '⭐'}
+                  <td className={callClass} style={{ verticalAlign: 'middle', color: isCallItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.ce.delta.toFixed(2)}
+                  </td>
+                  <td className={callClass} style={{ verticalAlign: 'middle', color: isCallItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.ce.theta.toFixed(2)}
+                  </td>
+                  <td className={callClass} style={{ borderRight: '1px solid var(--border-glass)', verticalAlign: 'middle', color: isCallItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.ce.vega.toFixed(2)}
                   </td>
                   
+                  {/* Strike Price Capsule */}
+                  <td style={{ verticalAlign: 'middle', background: 'rgba(255, 255, 255, 0.01)', padding: '6px' }}>
+                    <span className={`strike-badge ${isAtm ? 'atm' : ''}`}>
+                      {item.strike} {isAtm && '⭐'}
+                    </span>
+                  </td>
+                  
+                  {/* PE Side */}
                   <td 
+                    className={putClass}
                     onClick={() => {
-                      const strikeType = isAtm ? 'ATM' : (item.strike > spotPrice ? 'ITM' : 'OTM');
+                      const strikeType = isAtm ? 'ATM' : (isPutItm ? 'ITM' : 'OTM');
                       onStrikeSelect('PE', strikeType);
                     }} 
-                    style={{ color: 'var(--accent-red)', fontWeight: 600, cursor: 'pointer', borderLeft: '1px solid var(--border-glass)' }}
+                    style={{ color: 'var(--accent-red)', fontWeight: 700, cursor: 'pointer', borderLeft: '1px solid var(--border-glass)', verticalAlign: 'middle' }}
+                    title="Click to select this strike in custom builder"
                   >
                     ₹{item.pe.price.toFixed(2)}
                   </td>
-                  <td>{item.pe.delta.toFixed(2)}</td>
-                  <td>{item.pe.theta.toFixed(2)}</td>
-                  <td>{item.pe.vega.toFixed(2)}</td>
+                  <td className={putClass} style={{ verticalAlign: 'middle', color: isPutItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.pe.delta.toFixed(2)}
+                  </td>
+                  <td className={putClass} style={{ verticalAlign: 'middle', color: isPutItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.pe.theta.toFixed(2)}
+                  </td>
+                  <td className={putClass} style={{ verticalAlign: 'middle', color: isPutItm ? 'rgba(255,255,255,0.85)' : 'var(--text-secondary)' }}>
+                    {item.pe.vega.toFixed(2)}
+                  </td>
                 </tr>
               );
             })}

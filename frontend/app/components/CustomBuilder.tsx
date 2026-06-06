@@ -17,6 +17,12 @@ interface CustomBuilderProps {
   setOptType: (val: string) => void;
   strikeSel: string;
   setStrikeSel: (val: string) => void;
+  strikeOffset: number;
+  setStrikeOffset: (val: number) => void;
+  expiryType: string;
+  setExpiryType: (val: string) => void;
+  trailSlPct: number;
+  setTrailSlPct: (val: number) => void;
   quantity: number;
   setQuantity: (val: number) => void;
   slPct: number;
@@ -49,6 +55,9 @@ export default function CustomBuilder({
   symbolTarget, setSymbolTarget,
   optType, setOptType,
   strikeSel, setStrikeSel,
+  strikeOffset, setStrikeOffset,
+  expiryType, setExpiryType,
+  trailSlPct, setTrailSlPct,
   quantity, setQuantity,
   slPct, setSlPct,
   targetPct, setTargetPct,
@@ -90,7 +99,7 @@ export default function CustomBuilder({
   };
 
   return (
-    <div className="glass-panel animate-slide-in" style={{ margin: '24px', padding: '30px', maxWidth: '1100px' }}>
+    <div className="glass-panel responsive-container animate-slide-in" style={{ padding: '30px', maxWidth: '1100px' }}>
       <h2 style={{ fontSize: '20px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
         <Bot size={22} className="glow-green" /> Strategy Builder
       </h2>
@@ -101,7 +110,7 @@ export default function CustomBuilder({
       {/* ── Strategy Type Selector ── */}
       <div style={{ marginBottom:'24px' }}>
         <label style={LABEL}>Strategy Type</label>
-        <div style={{ display:'flex', gap:'10px', marginTop:'8px' }}>
+        <div className="flex-responsive" style={{ marginTop:'8px' }}>
           <button onClick={()=>setStrategyType('orb_breakout')}
             style={{
               flex:1, padding:'14px 16px', borderRadius:'12px', cursor:'pointer',
@@ -141,7 +150,7 @@ export default function CustomBuilder({
       </div>
 
       {/* ── Common Fields ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+      <div className="grid-responsive-2" style={{ marginBottom: '24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <label style={LABEL}>Strategy Name</label>
           <input 
@@ -175,7 +184,7 @@ export default function CustomBuilder({
       </div>
 
       {/* ── Common: Symbol, Quantity ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+      <div className="grid-responsive-4" style={{ marginBottom: '24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <label style={LABEL}>Target Symbol</label>
           <select value={symbolTarget} onChange={(e) => setSymbolTarget(e.target.value)} style={GLASS_INPUT}>
@@ -218,6 +227,45 @@ export default function CustomBuilder({
         </div>
       </div>
 
+      {/* ── Advanced Option Parameters ── */}
+      <div className="grid-responsive-4" style={{ marginBottom: '24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={LABEL}>Strike Offset</label>
+          <select value={strikeOffset} onChange={(e) => setStrikeOffset(Number(e.target.value))} style={GLASS_INPUT}>
+            <option value={-5}>-5 Strikes</option>
+            <option value={-4}>-4 Strikes</option>
+            <option value={-3}>-3 Strikes</option>
+            <option value={-2}>-2 Strikes</option>
+            <option value={-1}>-1 Strike</option>
+            <option value={0}>0 (ATM / No Offset)</option>
+            <option value={1}>+1 Strike</option>
+            <option value={2}>+2 Strikes</option>
+            <option value={3}>+3 Strikes</option>
+            <option value={4}>+4 Strikes</option>
+            <option value={5}>+5 Strikes</option>
+          </select>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={LABEL}>Expiry Type</label>
+          <select value={expiryType} onChange={(e) => setExpiryType(e.target.value)} style={GLASS_INPUT}>
+            <option value="CURRENT_WEEKLY">Current Weekly Expiry</option>
+            <option value="NEXT_WEEKLY">Next Weekly Expiry</option>
+            <option value="MONTHLY">Current Monthly Expiry</option>
+          </select>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={LABEL}>Trailing Stop Loss (%)</label>
+          <input 
+            type="number" 
+            step="0.1" 
+            placeholder="0.0 (No Trailing)"
+            value={trailSlPct || ''} 
+            onChange={(e) => setTrailSlPct(Number(e.target.value))} 
+            style={{ ...GLASS_INPUT, borderLeft: '3px solid var(--accent-orange)' }} 
+          />
+        </div>
+      </div>
+
       {/* ══════════════════════════════════════════════════════════════
           ORB BREAKOUT CONFIG
           ══════════════════════════════════════════════════════════════ */}
@@ -238,7 +286,7 @@ export default function CustomBuilder({
             5. After <strong style={{ color:'#fff' }}>10:30</strong> → switch to <strong style={{ color:'#fff' }}>{postBreakoutTf}</strong> candles for monitoring
           </div>
 
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:'14px' }}>
+          <div className="grid-responsive-4" style={{ gap:'14px' }}>
             {/* Premium Range */}
             <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
               <label style={LABEL}>Min Premium (₹)</label>
@@ -320,6 +368,20 @@ export default function CustomBuilder({
                 />
               )}
 
+              <select 
+                value={cond.offset || 0} 
+                onChange={(e) => updateCondition('entry', idx, { offset: Number(e.target.value) })} 
+                className="input-glass" 
+                style={{ width: '90px', background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}
+              >
+                <option value={0}>Offset 0</option>
+                <option value={1}>Offset -1</option>
+                <option value={2}>Offset -2</option>
+                <option value={3}>Offset -3</option>
+                <option value={4}>Offset -4</option>
+                <option value={5}>Offset -5</option>
+              </select>
+
               <select value={cond.comparison} onChange={(e) => updateCondition('entry', idx, { comparison: e.target.value })} className="input-glass" style={{ background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}>
                 <option value="CROSS_ABOVE">Crosses Above</option>
                 <option value="CROSS_BELOW">Crosses Below</option>
@@ -359,6 +421,19 @@ export default function CustomBuilder({
                       style={{ width: '80px', padding: '6px 10px', height: '32px', fontSize: '12px' }}
                     />
                   )}
+                  <select 
+                    value={cond.target_offset || 0} 
+                    onChange={(e) => updateCondition('entry', idx, { target_offset: Number(e.target.value) })} 
+                    className="input-glass" 
+                    style={{ width: '90px', background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}
+                  >
+                    <option value={0}>Offset 0</option>
+                    <option value={1}>Offset -1</option>
+                    <option value={2}>Offset -2</option>
+                    <option value={3}>Offset -3</option>
+                    <option value={4}>Offset -4</option>
+                    <option value={5}>Offset -5</option>
+                  </select>
                 </>
               )}
 
@@ -397,6 +472,20 @@ export default function CustomBuilder({
                   style={{ width: '80px', padding: '6px 10px', height: '32px', fontSize: '12px' }}
                 />
               )}
+
+              <select 
+                value={cond.offset || 0} 
+                onChange={(e) => updateCondition('exit', idx, { offset: Number(e.target.value) })} 
+                className="input-glass" 
+                style={{ width: '90px', background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}
+              >
+                <option value={0}>Offset 0</option>
+                <option value={1}>Offset -1</option>
+                <option value={2}>Offset -2</option>
+                <option value={3}>Offset -3</option>
+                <option value={4}>Offset -4</option>
+                <option value={5}>Offset -5</option>
+              </select>
 
               <select value={cond.comparison} onChange={(e) => updateCondition('exit', idx, { comparison: e.target.value })} className="input-glass" style={{ background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}>
                 <option value="CROSS_ABOVE">Crosses Above</option>
@@ -437,6 +526,19 @@ export default function CustomBuilder({
                       style={{ width: '80px', padding: '6px 10px', height: '32px', fontSize: '12px' }}
                     />
                   )}
+                  <select 
+                    value={cond.target_offset || 0} 
+                    onChange={(e) => updateCondition('exit', idx, { target_offset: Number(e.target.value) })} 
+                    className="input-glass" 
+                    style={{ width: '90px', background: '#0D121D', padding: '6px 10px', height: '32px', fontSize: '12px' }}
+                  >
+                    <option value={0}>Offset 0</option>
+                    <option value={1}>Offset -1</option>
+                    <option value={2}>Offset -2</option>
+                    <option value={3}>Offset -3</option>
+                    <option value={4}>Offset -4</option>
+                    <option value={5}>Offset -5</option>
+                  </select>
                 </>
               )}
 
@@ -447,7 +549,7 @@ export default function CustomBuilder({
           ))}
 
           {/* Stop Loss & Target Parameters */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginTop: '16px', background: 'rgba(255,255,255,0.01)', border: '1px dashed var(--border-glass)', borderRadius: '10px', padding: '16px' }}>
+          <div className="grid-responsive-2" style={{ marginTop: '16px', background: 'rgba(255,255,255,0.01)', border: '1px dashed var(--border-glass)', borderRadius: '10px', padding: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '12px', color: 'var(--accent-red)', fontWeight: 600 }}>🔻 Hard Stop Loss Percentage (%)</label>
               <input 

@@ -177,56 +177,81 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # Dynamic Condition Evaluator
 # ---------------------------------------------------------
 
-def check_rule_condition(condition: Dict[str, Any], last_row: pd.Series, prev_row: pd.Series) -> bool:
+def check_rule_condition(condition: Dict[str, Any], last_row: pd.Series, prev_row: pd.Series, df: Optional[pd.DataFrame] = None) -> bool:
     """
-    Evaluates a custom logic rule condition against the two most recent data points (rows).
-    Example condition JSON:
-    {
-      "indicator": "RSI",
-      "period": 14,             # Optional / defaults
-      "comparison": "CROSS_ABOVE",  # CROSS_ABOVE, CROSS_BELOW, GREATER_THAN, LESS_THAN, EQUALS
-      "target": "VALUE",        # VALUE or INDICATOR
-      "value": 50.0,            # if target is VALUE
-      "target_indicator": "EMA",# if target is INDICATOR
-      "target_period": 21
-    }
+    Evaluates a custom logic rule condition against the data points,
+    supporting indicator lookback offsets.
     """
-    # Helper to resolve field name in pandas DataFrame
-    def get_field_val(indicator_name: str, period: Optional[int]) -> float:
-        name_lower = indicator_name.lower()
-        if name_lower == "close":
-            return float(last_row["close"])
-        elif name_lower == "rsi":
-            return float(last_row.get("rsi", 50))
-        elif name_lower == "ema":
-            p = period or 9
-            return float(last_row.get(f"ema_{p}", last_row["close"]))
-        elif name_lower == "vwap":
-            return float(last_row.get("vwap", last_row["close"]))
-        elif name_lower == "supertrend":
-            return float(last_row.get("supertrend", last_row["close"]))
-        return float(last_row.get(name_lower, last_row["close"]))
+    # 1. Resolve row positions
+    row_t = last_row
+    row_prev = prev_row
+    
+    offset = int(condition.get("offset", 0))
+    target_offset = int(condition.get("target_offset", 0))
+    
+    # If df is provided, retrieve historical offset rows
+    if df is not None and not df.empty:
+        try:
+            # Series name is the index value (timestamp)
+            idx_name = last_row.name
+            if idx_name in df.index:
+                idx_pos = df.index.get_loc(idx_name)
+                
+                # Check bounds
+                if idx_pos - offset >= 0:
+                    row_t = df.iloc[idx_pos - offset]
+                else:
+                    return False  # not enough history for main offset
+                    
+                if idx_pos - offset - 1 >= 0:
+                    row_prev = df.iloc[idx_pos - offset - 1]
+                else:
+                    return False  # not enough history for main prev offset
+        except Exception as bounds_err:
+            logger.warning(f"Error resolving offset index positions in check_rule_condition: {bounds_err}")
+            
+    # Resolve target row values
+    row_tgt = last_row
+    row_tgt_prev = prev_row
+    if df is not None and not df.empty:
+        try:
+            idx_name = last_row.name
+            if idx_name in df.index:
+                idx_pos = df.index.get_loc(idx_name)
+                if idx_pos - target_offset >= 0:
+                    row_tgt = df.iloc[idx_pos - target_offset]
+                else:
+                    return False
+                if idx_pos - target_offset - 1 >= 0:
+                    row_tgt_prev = df.iloc[idx_pos - target_offset - 1]
+                else:
+                    return False
+        except Exception:
+            pass
 
-    def get_prev_field_val(indicator_name: str, period: Optional[int]) -> float:
+    # Helper to resolve field name
+    def get_field_val(row: pd.Series, indicator_name: str, period: Optional[int]) -> float:
         name_lower = indicator_name.lower()
         if name_lower == "close":
-            return float(prev_row["close"])
+            return float(row["close"])
         elif name_lower == "rsi":
-            return float(prev_row.get("rsi", 50))
+            return float(row.get("rsi", 50))
         elif name_lower == "ema":
             p = period or 9
-            return float(prev_row.get(f"ema_{p}", prev_row["close"]))
+            return float(row.get(f"ema_{p}", row["close"]))
         elif name_lower == "vwap":
-            return float(prev_row.get("vwap", prev_row["close"]))
-        return float(prev_row.get(name_lower, prev_row["close"]))
+            return float(row.get("vwap", row["close"]))
+        elif name_lower == "supertrend":
+            return float(row.get("supertrend", row["close"]))
+        return float(row.get(name_lower, row["close"]))
 
     try:
         ind = condition.get("indicator", "CLOSE")
         p1 = condition.get("period")
         comparison = condition.get("comparison", "GREATER_THAN").upper()
         
-        current_val = get_field_val(ind, p1)
-        prev_val = get_prev_field_val(ind, p1)
+        current_val = get_field_val(row_t, ind, p1)
+        prev_val = get_field_val(row_prev, ind, p1)
 
         # Resolve target value
         target_type = condition.get("target", "VALUE").upper()
@@ -236,8 +261,8 @@ def check_rule_condition(condition: Dict[str, Any], last_row: pd.Series, prev_ro
         else:
             target_ind = condition.get("target_indicator", "EMA")
             p2 = condition.get("target_period")
-            target_val = get_field_val(target_ind, p2)
-            prev_target_val = get_prev_field_val(target_ind, p2)
+            target_val = get_field_val(row_tgt, target_ind, p2)
+            prev_target_val = get_field_val(row_tgt_prev, target_ind, p2)
 
         # Apply comparison operator
         if comparison == "GREATER_THAN":
@@ -247,10 +272,10 @@ def check_rule_condition(condition: Dict[str, Any], last_row: pd.Series, prev_ro
         elif comparison == "EQUALS":
             return math.isclose(current_val, target_val, rel_tol=1e-5)
         elif comparison == "CROSS_ABOVE":
-            # Current is above, previous was below
+            # Current is above, previous was below or equal
             return prev_val <= prev_target_val and current_val > target_val
         elif comparison == "CROSS_BELOW":
-            # Current is below, previous was above
+            # Current is below, previous was above or equal
             return prev_val >= prev_target_val and current_val < target_val
 
     except Exception as e:

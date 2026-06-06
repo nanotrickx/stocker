@@ -1,7 +1,27 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, TrendingUp, Shield, Settings, Briefcase, Calendar, BarChart2, Play } from 'lucide-react';
+import { 
+  Activity, 
+  TrendingUp, 
+  Shield, 
+  Settings, 
+  Briefcase, 
+  Calendar, 
+  BarChart2, 
+  Play,
+  ChevronLeft,
+  ChevronRight,
+  Bot,
+  BookOpen,
+  LayoutDashboard,
+  Sliders,
+  Terminal,
+  Server,
+  Zap,
+  Pause,
+  Square
+} from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 import { Strategy, StrategyInstance, Trade, OptionChainItem, IndicatorCondition, StrategyType } from './types';
@@ -17,13 +37,21 @@ import SettingsPage from './components/SettingsPage';
 import PortfolioPage from './components/PortfolioPage';
 import HistoricalChart from './components/HistoricalChart';
 import BacktestPage from './components/BacktestPage';
+import Watchlist from './components/Watchlist';
 
 export default function StockerDashboard() {
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [serverHealth, setServerHealth] = useState(true);
   const [refreshChartKey, setRefreshChartKey] = useState(0);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  const handleSelectTab = (tabName: string) => {
+    setActiveTab(tabName);
+    setMobileSidebarOpen(false);
+  };
 
   // Dynamic Workspace Toggle inside the Algorithms section
   const [isBuildingStrategy, setIsBuildingStrategy] = useState(false);
@@ -48,6 +76,9 @@ export default function StockerDashboard() {
   const [dhanAccessToken, setDhanAccessToken] = useState('');
   const [dhanTotpSecret, setDhanTotpSecret] = useState('');
   const [activeBroker, setActiveBroker] = useState('kite');
+  const [engineStatus, setEngineStatus] = useState<'RUNNING' | 'PAUSED' | 'STOPPED'>('RUNNING');
+  const [isPaperRunning, setIsPaperRunning] = useState(false);
+  const [isLiveRunning, setIsLiveRunning] = useState(false);
 
   // Broker Portfolio Balance States
   const [portfolio, setPortfolio] = useState({
@@ -78,6 +109,11 @@ export default function StockerDashboard() {
   const [premiumMax, setPremiumMax] = useState(200);
   const [postBreakoutTf, setPostBreakoutTf] = useState('5minute');
   
+  // Custom Option strategy parameters
+  const [strikeOffset, setStrikeOffset] = useState<number>(0);
+  const [expiryType, setExpiryType] = useState<string>('CURRENT_WEEKLY');
+  const [trailSlPct, setTrailSlPct] = useState<number>(0.0);
+  
   // Entry & Exit Conditions builders
   const [entryConditions, setEntryConditions] = useState<IndicatorCondition[]>([
     { indicator: 'EMA', period: 9, comparison: 'CROSS_ABOVE', target: 'INDICATOR', target_indicator: 'EMA', target_period: 20 }
@@ -87,6 +123,80 @@ export default function StockerDashboard() {
   ]);
 
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Global theme state
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedTheme = localStorage.getItem('stocker-theme') as 'dark' | 'light' || 'dark';
+      setTheme(savedTheme);
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    }
+  }, []);
+
+  const handleToggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    localStorage.setItem('stocker-theme', nextTheme);
+    document.documentElement.setAttribute('data-theme', nextTheme);
+  };
+
+  const fetchEngineStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setEngineStatus(data.status);
+        setIsPaperRunning(data.is_paper_running);
+        setIsLiveRunning(data.is_live_running);
+      }
+    } catch (err) {
+      console.error("Failed to fetch engine status:", err);
+    }
+  };
+
+  const pauseEngine = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/pause`, { method: 'POST' });
+      if (res.ok) {
+        setEngineStatus('PAUSED');
+      } else {
+        alert('Failed to pause trading engine.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error pausing engine.');
+    }
+  };
+
+  const stopEngine = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/stop`, { method: 'POST' });
+      if (res.ok) {
+        setEngineStatus('STOPPED');
+      } else {
+        alert('Failed to stop trading engine.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error stopping engine.');
+    }
+  };
+
+  const resumeEngine = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/resume`, { method: 'POST' });
+      if (res.ok) {
+        setEngineStatus('RUNNING');
+      } else {
+        alert('Failed to resume trading engine.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error resuming engine.');
+    }
+  };
 
   // ---------------------------------------------------------
   // Backend Integrations (Fetch & Save)
@@ -99,6 +209,7 @@ export default function StockerDashboard() {
     fetchTradeHistory();
     fetchCredentials();
     fetchPortfolio();
+    fetchEngineStatus();
     connectWebSocket();
     
     // Automatically detect and exchange request_token from Zerodha Kite login redirect!
@@ -106,7 +217,7 @@ export default function StockerDashboard() {
       const params = new URLSearchParams(window.location.search);
       const reqToken = params.get('request_token');
       if (reqToken) {
-        setActiveTab('settings');
+        handleSelectTab('settings');
         fetch(`${API_BASE}/api/broker/zerodha-login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -160,6 +271,15 @@ export default function StockerDashboard() {
           setPositions(payload.positions);
           if (payload.strategy_logs) {
             setStrategyLogs(payload.strategy_logs);
+          }
+          if (payload.engine_status) {
+            setEngineStatus(payload.engine_status);
+          }
+          if (payload.hasOwnProperty('is_paper_running')) {
+            setIsPaperRunning(payload.is_paper_running);
+          }
+          if (payload.hasOwnProperty('is_live_running')) {
+            setIsLiveRunning(payload.is_live_running);
           }
         }
       };
@@ -320,6 +440,9 @@ export default function StockerDashboard() {
     setQuantity(50);
     setOptType('CE');
     setStrikeSel('ATM');
+    setStrikeOffset(0);
+    setExpiryType('CURRENT_WEEKLY');
+    setTrailSlPct(0.0);
     setSlPct(4.0);
     setTargetPct(8.0);
     setEntryConditions([
@@ -328,7 +451,7 @@ export default function StockerDashboard() {
     setExitConditions([
       { indicator: 'RSI', period: 14, comparison: 'CROSS_BELOW', target: 'VALUE', value: 30 }
     ]);
-    setActiveTab('builder');
+    handleSelectTab('builder');
     setIsBuildingStrategy(true);
   };
 
@@ -346,6 +469,9 @@ export default function StockerDashboard() {
       setSymbolTarget(config.symbols?.[0] || 'NSE:NIFTY 50');
       setQuantity(action.quantity || 50);
       setStrikeSel(config.option_selection?.strike_selection || action.strike_selection || 'ATM');
+      setStrikeOffset(action.strike_offset || 0);
+      setExpiryType(action.expiry_type || 'CURRENT_WEEKLY');
+      setTrailSlPct(action.trail_sl_pct || 0.0);
 
       if (sType === 'orb_breakout') {
         setOptType('AUTO');
@@ -374,7 +500,7 @@ export default function StockerDashboard() {
         ]);
       }
       
-      setActiveTab('builder');
+      handleSelectTab('builder');
       setIsBuildingStrategy(true);
     } catch (e) {
       alert('Failed to parse strategy schema parameters.');
@@ -443,7 +569,9 @@ export default function StockerDashboard() {
           instrument_type: 'OPTION',
           option_type: optType,
           strike_selection: strikeSel,
-          expiry_type: 'WEEKLY',
+          strike_offset: strikeOffset,
+          expiry_type: expiryType,
+          trail_sl_pct: trailSlPct,
           quantity: quantity,
           paper_trade: isPaperTrade
         }
@@ -628,7 +756,7 @@ export default function StockerDashboard() {
   const handleStrikeSelect = (type: 'CE' | 'PE', strikeSelection: string) => {
     setOptType(type);
     setStrikeSel(strikeSelection);
-    setActiveTab('builder');
+    handleSelectTab('builder');
     setIsBuildingStrategy(true);
   };
 
@@ -648,71 +776,139 @@ export default function StockerDashboard() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      
-      {/* ----------------- TOP NAVBAR WIDGET ----------------- */}
-      <Header 
-        wsConnected={wsConnected} 
-        positionsCount={positions.length} 
-        onRefresh={() => { fetchStrategies(); fetchInstances(); fetchTradeHistory(); setRefreshChartKey(k => k + 1); }} 
-        onOpenSettings={() => setActiveTab('settings')} 
-      />
-
-      {/* ----------------- SUB-TABS SELECTOR ----------------- */}
-      <nav style={{ padding: '0 24px', marginTop: '16px', display: 'flex', gap: '12px' }}>
-        <button 
-          onClick={() => setActiveTab('dashboard')} 
-          className={activeTab === 'dashboard' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <TrendingUp size={16} /> Market Dashboard
-        </button>
-        <button 
-          onClick={() => { setActiveTab('builder'); setIsBuildingStrategy(false); }} 
-          className={activeTab === 'builder' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <Activity size={16} /> Trading Algorithms
-        </button>
-        <button 
-          onClick={() => setActiveTab('ledger')} 
-          className={activeTab === 'ledger' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <TrendingUp size={16} /> Trade History & Ledger
-        </button>
-        <button 
-          onClick={() => setActiveTab('backtest')} 
-          className={activeTab === 'backtest' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <BarChart2 size={16} /> Backtest Simulator
-        </button>
-        <button 
-          onClick={() => setActiveTab('portfolio')} 
-          className={activeTab === 'portfolio' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <Briefcase size={16} /> Broker Portfolio
-        </button>
-        <button 
-          onClick={() => setActiveTab('settings')} 
-          className={activeTab === 'settings' ? 'btn-primary' : 'btn-glass'}
-          style={{ padding: '10px 20px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <Settings size={16} /> System Settings
-        </button>
-      </nav>
-
-      {/* ----------------- CONNECTION ALERT ----------------- */}
-      {!serverHealth && (
-        <div className="glass-panel" style={{ margin: '16px 24px 0 24px', padding: '12px 20px', border: '1px solid rgba(244, 63, 94, 0.4)', background: 'rgba(244, 63, 94, 0.1)', display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--accent-red)' }}>
-          <span style={{ fontSize: '13px', fontWeight: 500 }}>Backend Stocker engine is unreachable. Please verify that the FastAPI backend server is running on port 8000.</span>
-        </div>
+    <div className="app-container">
+      {/* Mobile Sidebar Overlay Backdrop */}
+      {mobileSidebarOpen && (
+        <div 
+          className="sidebar-overlay" 
+          onClick={() => setMobileSidebarOpen(false)}
+        />
       )}
 
-      {/* ----------------- CENTRAL APP WORKSPACE ----------------- */}
-      <main style={{ flex: 1 }}>
+      {/* Collapsible Left Sidebar */}
+      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${mobileSidebarOpen ? 'mobile-open' : ''}`}>
+        {/* Brand / Logo */}
+        <div className="sidebar-logo-container">
+          <Activity size={24} className="glow-green" />
+          <span className="sidebar-logo-text gradient-text" style={{ fontWeight: 800 }}>STOCKER</span>
+          {!sidebarCollapsed && (
+            <span style={{ fontSize: '9px', padding: '1px 6px', background: 'rgba(99, 102, 241, 0.15)', color: '#8B5CF6', borderRadius: '8px', border: '1px solid rgba(99, 102, 241, 0.3)', marginLeft: '6px' }}>v1.5</span>
+          )}
+        </div>
+
+        {/* Navigation Menus */}
+        <nav className="sidebar-menu">
+          {/* Menu Group: Trading Desk */}
+          <div className="sidebar-menu-group">
+            <span className="sidebar-menu-title">Trading Desk</span>
+            <button 
+              onClick={() => handleSelectTab('dashboard')} 
+              className={`sidebar-item ${activeTab === 'dashboard' ? 'active' : ''}`}
+              title="Market Dashboard"
+            >
+              <LayoutDashboard size={18} />
+              <span className="sidebar-item-label">Market Dashboard</span>
+            </button>
+            <button 
+              onClick={() => handleSelectTab('ledger')} 
+              className={`sidebar-item ${activeTab === 'ledger' ? 'active' : ''}`}
+              title="Trade History & Ledger"
+            >
+              <BookOpen size={18} />
+              <span className="sidebar-item-label">Trade History & Ledger</span>
+            </button>
+            <button 
+              onClick={() => handleSelectTab('portfolio')} 
+              className={`sidebar-item ${activeTab === 'portfolio' ? 'active' : ''}`}
+              title="Broker Portfolio"
+            >
+              <Briefcase size={18} />
+              <span className="sidebar-item-label">Broker Portfolio</span>
+            </button>
+          </div>
+
+          {/* Menu Group: Strategy Engine */}
+          <div className="sidebar-menu-group">
+            <span className="sidebar-menu-title">Strategy Engine</span>
+            <button 
+              onClick={() => { handleSelectTab('builder'); setIsBuildingStrategy(false); }} 
+              className={`sidebar-item ${activeTab === 'builder' ? 'active' : ''}`}
+              title="Trading Algorithms"
+            >
+              <Sliders size={18} />
+              <span className="sidebar-item-label">Trading Algorithms</span>
+            </button>
+            <button 
+              onClick={() => handleSelectTab('backtest')} 
+              className={`sidebar-item ${activeTab === 'backtest' ? 'active' : ''}`}
+              title="Backtest Simulator"
+            >
+              <BarChart2 size={18} />
+              <span className="sidebar-item-label">Backtest Simulator</span>
+            </button>
+          </div>
+
+          {/* Menu Group: System */}
+          <div className="sidebar-menu-group">
+            <span className="sidebar-menu-title">System</span>
+            <button 
+              onClick={() => handleSelectTab('settings')} 
+              className={`sidebar-item ${activeTab === 'settings' ? 'active' : ''}`}
+              title="System Settings"
+            >
+              <Settings size={18} />
+              <span className="sidebar-item-label">System Settings</span>
+            </button>
+          </div>
+        </nav>
+
+        {/* Sidebar Footer */}
+        <div className="sidebar-footer">
+          {sidebarCollapsed ? (
+            <div title={wsConnected ? 'LIVE FEED ACTIVE' : 'CONNECTION OFFLINE'} style={{ display: 'flex', justifyContent: 'center' }}>
+              <span className={`pulsar ${wsConnected ? '' : 'red'}`} style={{ width: '10px', height: '10px' }} />
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', background: 'rgba(255,255,255,0.02)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+              <span className={`pulsar ${wsConnected ? '' : 'red'}`} style={{ width: '8px', height: '8px' }} />
+              <span style={{ color: wsConnected ? 'var(--text-primary)' : 'var(--accent-red)', fontWeight: 600 }}>
+                {wsConnected ? 'FEED ONLINE' : 'FEED OFFLINE'}
+              </span>
+            </div>
+          )}
+
+          <button 
+            className="sidebar-collapse-btn" 
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
+          >
+            {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Workspace */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+        <Header 
+          wsConnected={wsConnected} 
+          positionsCount={positions.length} 
+          onRefresh={() => { fetchStrategies(); fetchInstances(); fetchTradeHistory(); setRefreshChartKey(k => k + 1); }} 
+          onOpenSettings={() => handleSelectTab('settings')} 
+          spotPrice={spotPrice}
+          activeTab={activeTab}
+          portfolio={portfolio}
+          onToggleMobileSidebar={() => setMobileSidebarOpen(prev => !prev)}
+          theme={theme}
+          onToggleTheme={handleToggleTheme}
+        />
+
+        {!serverHealth && (
+          <div className="glass-panel" style={{ margin: '16px 24px 0 24px', padding: '12px 20px', border: '1px solid rgba(244, 63, 94, 0.4)', background: 'rgba(244, 63, 94, 0.1)', display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--accent-red)' }}>
+            <span style={{ fontSize: '13px', fontWeight: 500 }}>Backend Stocker engine is unreachable. Please verify that the FastAPI backend server is running on port 8000.</span>
+          </div>
+        )}
+
+        <main style={{ flex: 1, overflowY: 'auto', paddingBottom: '30px' }}>
         
         {/* ================= TAB: DASHBOARD ================= */}
         {activeTab === 'dashboard' && (
@@ -725,10 +921,30 @@ export default function StockerDashboard() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
                 
                 {/* Index Spot Price */}
-                <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>NIFTY INDEX SPOT</span>
+                <div className="glass-panel" style={{ 
+                  padding: '20px', 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  justifyContent: 'center',
+                  borderLeft: '4px solid var(--accent-green)',
+                  background: 'radial-gradient(circle at top right, rgba(16, 185, 129, 0.05), transparent)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>NIFTY INDEX SPOT</span>
+                    {(() => {
+                      const openBaseline = 23812.50;
+                      const diffVal = spotPrice - openBaseline;
+                      const diffPct = (diffVal / openBaseline) * 100;
+                      const isDiffPos = diffVal >= 0;
+                      return (
+                        <span style={{ fontSize: '10px', color: isDiffPos ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          {isDiffPos ? '▲' : '▼'} {isDiffPos ? '+' : ''}{diffVal.toFixed(2)} ({diffPct.toFixed(2)}%)
+                        </span>
+                      );
+                    })()}
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: '4px' }}>
-                    <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)' }} className="glow-green">
+                    <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }} className="glow-green">
                       ₹{spotPrice.toFixed(2)}
                     </p>
                     <span style={{ fontSize: '11px', color: 'var(--accent-yellow)', fontWeight: 600 }}>3 Days Expiry</span>
@@ -740,12 +956,21 @@ export default function StockerDashboard() {
                   const pnl = calculateTotalPnL('PAPER');
                   const isPos = pnl >= 0;
                   return (
-                    <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', border: isPos ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(239, 68, 68, 0.15)' }}>
+                    <div className="glass-panel" style={{ 
+                      padding: '20px', 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      justifyContent: 'center', 
+                      borderLeft: isPos ? '4px solid var(--accent-green)' : '4px solid var(--accent-red)',
+                      background: isPos 
+                        ? 'radial-gradient(circle at top right, rgba(16, 185, 129, 0.06), transparent)' 
+                        : 'radial-gradient(circle at top right, rgba(244, 63, 94, 0.06), transparent)'
+                    }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>PAPER SANDBOX P&L</span>
-                        <span style={{ fontSize: '9px', background: 'rgba(139, 92, 246, 0.15)', color: '#8B5CF6', padding: '1px 6px', borderRadius: '8px', fontWeight: 600 }}>SANDBOX</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>PAPER SANDBOX P&L</span>
+                        <span style={{ fontSize: '9px', background: 'rgba(139, 92, 246, 0.15)', color: '#8B5CF6', padding: '1px 6px', borderRadius: '8px', fontWeight: 700 }}>SANDBOX</span>
                       </div>
-                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', margin: 0, color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                         {isPos ? '+' : ''}₹{pnl.toFixed(2)}
                       </p>
                     </div>
@@ -758,14 +983,23 @@ export default function StockerDashboard() {
                   const isPos = pnl >= 0;
                   const activeBrokerName = activeBroker === 'kite' ? 'Zerodha' : 'AliceBlue';
                   return (
-                    <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', border: isPos ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(239, 68, 68, 0.15)' }}>
+                    <div className="glass-panel" style={{ 
+                      padding: '20px', 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      justifyContent: 'center', 
+                      borderLeft: isPos ? '4px solid var(--accent-green)' : '4px solid var(--accent-red)',
+                      background: isPos 
+                        ? 'radial-gradient(circle at top right, rgba(16, 185, 129, 0.06), transparent)' 
+                        : 'radial-gradient(circle at top right, rgba(244, 63, 94, 0.06), transparent)'
+                    }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>LIVE TRADING P&L</span>
-                        <span style={{ fontSize: '9px', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-green)', padding: '1px 6px', borderRadius: '8px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>LIVE TRADING P&L</span>
+                        <span style={{ fontSize: '9px', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-green)', padding: '1px 6px', borderRadius: '8px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '3px' }}>
                           <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--accent-green)', display: 'inline-block' }} className="pulse-slow" /> {activeBrokerName}
                         </span>
                       </div>
-                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                      <p style={{ fontSize: '28px', fontWeight: 800, fontFamily: 'var(--font-display)', marginTop: '4px', margin: 0, color: isPos ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                         {isPos ? '+' : ''}₹{pnl.toFixed(2)}
                       </p>
                     </div>
@@ -830,7 +1064,11 @@ export default function StockerDashboard() {
               </div>
 
               {/* Interactive Spot Price Chart */}
-              <HistoricalChart symbol={symbolTarget} refreshTrigger={refreshChartKey} />
+              <HistoricalChart 
+                symbol={symbolTarget} 
+                refreshTrigger={refreshChartKey} 
+                theme={theme}
+              />
 
               {/* Options Chain Grid */}
               <OptionChain 
@@ -846,6 +1084,12 @@ export default function StockerDashboard() {
               {/* Active Positions Board */}
               <ActivePositions positions={positions} onForceExit={handleForceExit} />
 
+              {/* Stock Watchlist */}
+              <Watchlist 
+                onSelectSymbol={(sym) => setSymbolTarget(sym)} 
+                selectedSymbol={symbolTarget} 
+              />
+
               {/* Deployed Algos Controller */}
               <ActiveAlgorithms 
                 templates={strategies}
@@ -857,23 +1101,141 @@ export default function StockerDashboard() {
                 onDeleteTemplate={deleteStrategy}
                 onSendTelegramStatus={sendTelegramStatus}
                 strategyLogs={strategyLogs}
+                hideBlueprints={true}
               />
 
+              {/* Telemetry Console */}
+              <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                    <Activity size={14} style={{ color: '#8B5CF6' }} /> Stocker Engine Telemetry
+                  </h3>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    fontWeight: 700, 
+                    padding: '2px 8px', 
+                    borderRadius: '4px',
+                    background: engineStatus === 'RUNNING' ? 'rgba(16, 185, 129, 0.15)' : engineStatus === 'PAUSED' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: engineStatus === 'RUNNING' ? 'var(--accent-green)' : engineStatus === 'PAUSED' ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                    border: '1px solid var(--border-glass)'
+                  }}>
+                    {engineStatus}
+                  </span>
+                </div>
+                
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Tick Pipeline</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)' }}>
+                      {engineStatus === 'RUNNING' ? (
+                        <>
+                          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} className="pulse-slow" /> Active (24 ticks/s)
+                        </>
+                      ) : engineStatus === 'PAUSED' ? (
+                        <>
+                          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-yellow)', display: 'inline-block' }} /> Paused (0 ticks/s)
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-red)', display: 'inline-block' }} /> Inactive (Stopped)
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Engine Latency</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: engineStatus === 'RUNNING' ? '#10B981' : 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {engineStatus === 'RUNNING' ? '12 ms' : '--'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Paper Sandbox Target</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: isPaperRunning ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                      {isPaperRunning ? '🟢 Active Sandbox' : '⚫ No Active Sandbox'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Live Routing Target</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: isLiveRunning ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                      {isLiveRunning ? '⚡ Active Live Routing' : '⚫ No Active Live'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Engine Controller Buttons */}
+                <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                  {engineStatus === 'RUNNING' && (
+                    <>
+                      <button 
+                        onClick={pauseEngine}
+                        className="btn-glass"
+                        style={{ flex: 1, padding: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', color: 'var(--accent-yellow)', border: '1px solid rgba(245, 158, 11, 0.2)', cursor: 'pointer' }}
+                      >
+                        <Pause size={12} /> Pause Engine
+                      </button>
+                      <button 
+                        onClick={stopEngine}
+                        className="btn-glass"
+                        style={{ flex: 1, padding: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', color: 'var(--accent-red)', border: '1px solid rgba(244, 63, 94, 0.2)', cursor: 'pointer' }}
+                      >
+                        <Square size={12} /> Stop Engine
+                      </button>
+                    </>
+                  )}
+                  {engineStatus === 'PAUSED' && (
+                    <>
+                      <button 
+                        onClick={resumeEngine}
+                        className="btn-primary"
+                        style={{ flex: 1, padding: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer' }}
+                      >
+                        <Play size={12} /> Resume Engine
+                      </button>
+                      <button 
+                        onClick={stopEngine}
+                        className="btn-glass"
+                        style={{ flex: 1, padding: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', color: 'var(--accent-red)', border: '1px solid rgba(244, 63, 94, 0.2)', cursor: 'pointer' }}
+                      >
+                        <Square size={12} /> Stop Engine
+                      </button>
+                    </>
+                  )}
+                  {engineStatus === 'STOPPED' && (
+                    <button 
+                      onClick={resumeEngine}
+                      className="btn-primary"
+                      style={{ flex: 1, padding: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer' }}
+                    >
+                      <Play size={12} /> Resume / Start Engine
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Log Board */}
-              <div className="glass-panel" style={{ padding: '20px', flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <h3 style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Activity size={14} /> Indicator evaluation console logs
-                </h3>
+              <div className="terminal-window" style={{ display: 'flex', flexDirection: 'column', flex: 1, maxHeight: '280px' }}>
+                <div className="terminal-header">
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <span className="terminal-dot red" />
+                    <span className="terminal-dot yellow" />
+                    <span className="terminal-dot green" />
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '6px' }}>
+                      <Activity size={13} style={{ color: '#8B5CF6' }} /> Indicator evaluation console logs
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>bash - indicators.sh</span>
+                </div>
+                
                 <div style={{ 
-                  flex: 1, background: 'rgba(0, 0, 0, 0.4)', borderRadius: '8px', padding: '12px', 
+                  flex: 1, padding: '16px', 
                   fontFamily: 'monospace', fontSize: '11px', color: '#10B981', overflowY: 'auto', 
-                  maxHeight: '200px', border: '1px solid rgba(255,255,255,0.03)' 
+                  display: 'flex', flexDirection: 'column', gap: '4px'
                 }}>
                   {strategyLogs.length === 0 ? (
                     <>
-                      <p style={{ color: 'var(--text-muted)' }}>[SYSTEM BOOT] Stocker active indicator loops loaded.</p>
-                      <p style={{ color: 'var(--text-muted)' }}>[WS] Connected and listening to live option tick streams...</p>
-                      <p style={{ color: '#8B5CF6' }}>[ENGINE] Waiting for strategy activation to stream live rule evaluation ticks...</p>
+                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>[SYSTEM BOOT] Stocker active indicator loops loaded.</p>
+                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>[WS] Connected and listening to live option tick streams...</p>
+                      <p style={{ color: '#8B5CF6', margin: 0 }}>[ENGINE] Waiting for strategy activation to stream live rule evaluation ticks...</p>
                     </>
                   ) : (
                     strategyLogs.slice().reverse().map((log, index) => {
@@ -883,7 +1245,7 @@ export default function StockerDashboard() {
                       else if (log.message.includes('[TICK]')) color = '#6B7280';
                       
                       return (
-                        <p key={index} style={{ color, marginBottom: '4px', lineHeight: '1.4' }}>
+                        <p key={index} style={{ color, margin: 0, lineHeight: '1.4' }}>
                           <span style={{ color: '#8B5CF6', marginRight: '6px' }}>[{log.timestamp}]</span>
                           <span style={{ color: '#6366F1', fontWeight: 600, marginRight: '4px' }}>[{log.strategy_name}]</span>
                           {log.message}
@@ -925,6 +1287,12 @@ export default function StockerDashboard() {
               setOptType={setOptType}
               strikeSel={strikeSel}
               setStrikeSel={setStrikeSel}
+              strikeOffset={strikeOffset}
+              setStrikeOffset={setStrikeOffset}
+              expiryType={expiryType}
+              setExpiryType={setExpiryType}
+              trailSlPct={trailSlPct}
+              setTrailSlPct={setTrailSlPct}
               quantity={quantity}
               setQuantity={setQuantity}
               slPct={slPct}
@@ -958,11 +1326,11 @@ export default function StockerDashboard() {
 
         {/* ================= TAB: PORTFOLIO ================= */}
         {activeTab === 'backtest' && (
-          <BacktestPage />
+          <BacktestPage theme={theme} />
         )}
         {activeTab === 'portfolio' && (
           <PortfolioPage 
-            onGoToSettings={() => setActiveTab('settings')}
+            onGoToSettings={() => handleSelectTab('settings')}
           />
         )}
 
@@ -994,6 +1362,7 @@ export default function StockerDashboard() {
           />
         )}
       </main>
+      </div>
 
       {activeStrategyToActivate && (
         <ActivationModal

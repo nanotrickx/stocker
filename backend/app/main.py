@@ -198,13 +198,25 @@ async def broadcast_stream_task():
                         "entry_time": t.entry_time.isoformat()
                     })
 
+            engine_status = "RUNNING"
+            if not engine_instance.running:
+                engine_status = "STOPPED"
+            elif engine_instance.paused:
+                engine_status = "PAUSED"
+                
+            is_paper_running = any(strategy.active and strategy.paper_trade for strategy in engine_instance.active_strategies.values())
+            is_live_running = any(strategy.active and not strategy.paper_trade for strategy in engine_instance.active_strategies.values())
+
             data = {
                 "type": "STREAM_TICK",
                 "spot_price": spot,
                 "timestamp": datetime.now().isoformat(),
                 "option_chain": option_chain,
                 "positions": positions_data,
-                "strategy_logs": engine_instance.get_recent_logs()
+                "strategy_logs": engine_instance.get_recent_logs(),
+                "engine_status": engine_status,
+                "is_paper_running": is_paper_running,
+                "is_live_running": is_live_running
             }
 
             message_str = json.dumps(data)
@@ -245,6 +257,7 @@ class BacktestRequest(BaseModel):
     lots: int = 1
     slippage_pct: float = 0.0
     trail_sl_pct: Optional[float] = None
+    charges_per_trade: float = 0.0
 
 class TelegramBacktestReportRequest(BaseModel):
     strategy_name: str
@@ -259,6 +272,31 @@ class TelegramBacktestReportRequest(BaseModel):
     net_pnl: float
     final_capital: float
     trades: List[Dict[str, Any]] = []
+
+class TelegramTradeDetail(BaseModel):
+    entry_time: str
+    exit_time: str
+    symbol: str
+    instrument_type: str
+    quantity: int
+    entry_price: float
+    exit_price: float
+    gross_pnl: float
+    charges: float
+    pnl: float
+    pnl_pct: float
+    index_breakout_time: Optional[str] = "N/A"
+    index_breakout_price: Optional[float] = None
+    option_breakout_time: Optional[str] = "N/A"
+    option_breakout_price: Optional[float] = None
+    exit_reason: str
+
+class TelegramLedgerDocumentRequest(BaseModel):
+    strategy_name: str
+    symbol: str
+    from_date: str
+    to_date: str
+    trades: List[TelegramTradeDetail]
 
 class CredentialUpdate(BaseModel):
     broker_name: str
@@ -559,6 +597,7 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
         expiry_date=payload.expiry_date,
         slippage_pct=payload.slippage_pct,
         trail_sl_pct=payload.trail_sl_pct,
+        charges_per_trade=payload.charges_per_trade,
     )
 
     # Inject interval/meta info
@@ -838,9 +877,11 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                 exit_price = price
                 if payload.slippage_pct > 0:
                     exit_price = round(exit_price * (1 - payload.slippage_pct / 100.0), 2)
-                trade_pnl     = round((exit_price - entry_price) * qty, 2)
+                gross_pnl     = (exit_price - entry_price) * qty
+                trade_charges = payload.charges_per_trade
+                trade_net_pnl = round(gross_pnl - trade_charges, 2)
                 pnl_pct       = round(((exit_price - entry_price) / entry_price) * 100.0, 2)
-                capital      += (exit_price * qty)            # return sale proceeds
+                capital      += (exit_price * qty) - trade_charges  # return sale proceeds and deduct transaction charges
                 capital       = round(capital, 2)
 
                 completed_trades.append({
@@ -851,7 +892,9 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                     "qty":          qty,
                     "entry_price":  entry_price,
                     "exit_price":   exit_price,
-                    "pnl":          trade_pnl,
+                    "pnl":          trade_net_pnl,
+                    "gross_pnl":    round(gross_pnl, 2),
+                    "charges":      round(trade_charges, 2),
                     "pnl_pct":      pnl_pct,
                     "exit_reason":  exit_reason,
                 })
@@ -860,12 +903,12 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
                 journal_entry["action"]  = "SELL"
                 journal_entry["qty"]     = qty
                 journal_entry["price"]   = exit_price
-                journal_entry["pnl"]     = trade_pnl
+                journal_entry["pnl"]     = trade_net_pnl
                 journal_entry["reason"]  = exit_reasons
                 journal_entry["note"]    = (
                     f"Exit triggered ({exit_reason}). "
                     f"Sold {qty} units @ ₹{price:.2f}. "
-                    f"P&L: {'▲' if trade_pnl >= 0 else '▼'} ₹{trade_pnl:.2f} ({pnl_pct:.2f}%)."
+                    f"Gross P&L: ₹{gross_pnl:.2f} | Charges: ₹{trade_charges:.2f} | Net P&L: {'▲' if trade_net_pnl >= 0 else '▼'} ₹{trade_net_pnl:.2f} ({pnl_pct:.2f}%)."
                 )
                 active_trade = None
 
@@ -874,12 +917,56 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
         journal.append(journal_entry)
 
     # ── 6. Summary statistics ────────────────────────────────────
+    def calculate_profit_factor(trades) -> float:
+        if not trades:
+            return 0.0
+        gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+        gross_loss = sum(abs(t["pnl"]) for t in trades if t["pnl"] < 0)
+        if gross_loss > 0:
+            return float(round(gross_profit / gross_loss, 2))
+        return float(round(gross_profit, 2)) if gross_profit > 0 else 0.0
+
+    def calculate_sharpe_ratio(trades, eq_curve, init_cap) -> float:
+        import numpy as np
+        # Try daily returns first if there are multiple days
+        try:
+            import pandas as pd
+            if len(eq_curve) >= 2:
+                df_eq = pd.DataFrame(eq_curve)
+                df_eq['date'] = pd.to_datetime(df_eq['date'])
+                df_daily = df_eq.set_index('date').resample('D').last().ffill()
+                daily_balances = df_daily['balance'].values
+                if len(daily_balances) >= 2:
+                    daily_returns = []
+                    for i in range(1, len(daily_balances)):
+                        prev_bal = daily_balances[i-1]
+                        if prev_bal > 0:
+                            daily_returns.append((daily_balances[i] - prev_bal) / prev_bal)
+                    if daily_returns and np.std(daily_returns) > 0:
+                        return float(round((np.mean(daily_returns) / np.std(daily_returns)) * np.sqrt(252), 2))
+        except Exception:
+            pass
+
+        # Fallback to trade-level returns
+        if not trades:
+            return 0.0
+        try:
+            trade_returns = [t["pnl"] / init_cap for t in trades]
+            mean_ret = np.mean(trade_returns)
+            std_ret = np.std(trade_returns)
+            if std_ret > 0:
+                return float(round((mean_ret / std_ret) * np.sqrt(len(trades)), 2))
+        except Exception:
+            pass
+        return 0.0
+
     total_trades      = len(completed_trades)
     profitable_trades = sum(1 for t in completed_trades if t["pnl"] > 0)
     losing_trades     = sum(1 for t in completed_trades if t["pnl"] <= 0)
     win_rate          = round((profitable_trades / total_trades) * 100, 2) if total_trades > 0 else 0.0
     net_pnl           = round(capital - initial, 2)
     return_pct        = round((net_pnl / initial) * 100, 2)
+    total_charges     = sum(t.get("charges", 0.0) for t in completed_trades)
     max_dd            = 0.0
     peak              = initial
     for pt in equity_curve:
@@ -888,6 +975,9 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
         dd = (peak - pt["balance"]) / peak * 100.0
         if dd > max_dd:
             max_dd = round(dd, 2)
+
+    profit_factor = calculate_profit_factor(completed_trades)
+    sharpe_ratio = calculate_sharpe_ratio(completed_trades, equity_curve, initial)
 
     return {
         "status": "SUCCESS",
@@ -910,6 +1000,9 @@ def run_strategy_backtest(payload: BacktestRequest, session: Session = Depends(g
             "losing_trades":    losing_trades,
             "win_rate":         win_rate,
             "max_drawdown_pct": max_dd,
+            "total_charges":    round(total_charges, 2),
+            "profit_factor":    profit_factor,
+            "sharpe_ratio":     sharpe_ratio,
         },
         "equity_curve":  equity_curve,
         "visualization": visualization,
@@ -1177,12 +1270,129 @@ async def send_backtest_telegram_report(payload: TelegramBacktestReportRequest):
     except Exception as e:
         return {"status": "ERROR", "message": f"Telegram API Error: {e}"}
 
+@app.post("/api/backtest/telegram-ledger-document")
+async def send_backtest_telegram_ledger(payload: TelegramLedgerDocumentRequest):
+    if not engine_instance.telegram_bot:
+        return {"status": "ERROR", "message": "Telegram Bot is not configured."}
+
+    import io
+    import csv
+
+    # 1. Generate CSV content in-memory with BOM for Excel UTF-8 compatibility
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output, lineterminator='\n')
+
+    headers = [
+        'Entry Time', 'Exit Time', 'Symbol', 'Type', 'Lots', 'Lot Size', 'Qty',
+        'Buy Price', 'Sell Price', '1 Lot Cost', 'Total Buy Price',
+        'Gross P&L', 'Charges', 'Net P&L', 'P&L %',
+        'Spot Trigger Time', 'Spot Trigger Price', 'Opt Trigger Time', 'Opt Trigger Price',
+        'Exit Reason'
+    ]
+    writer.writerow(headers)
+
+    for t in payload.trades:
+        lot_size = get_base_lot_size(t.symbol)
+        lots_count = t.quantity / lot_size
+        one_lot_cost = lot_size * t.entry_price
+        total_buy_price = t.quantity * t.entry_price
+
+        lots_str = f"{lots_count:.1f}" if lots_count % 1 != 0 else f"{int(lots_count)}"
+
+        writer.writerow([
+            t.entry_time,
+            t.exit_time,
+            t.symbol,
+            t.instrument_type,
+            lots_str,
+            lot_size,
+            t.quantity,
+            f"{t.entry_price:.2f}",
+            f"{t.exit_price:.2f}",
+            f"{one_lot_cost:.2f}",
+            f"{total_buy_price:.2f}",
+            f"{t.gross_pnl:.2f}",
+            f"{t.charges:.2f}",
+            f"{t.pnl:.2f}",
+            f"{t.pnl_pct:.2f}",
+            t.index_breakout_time or 'N/A',
+            f"{t.index_breakout_price:.2f}" if t.index_breakout_price is not None else 'N/A',
+            t.option_breakout_time or 'N/A',
+            f"{t.option_breakout_price:.2f}" if t.option_breakout_price is not None else 'N/A',
+            t.exit_reason
+        ])
+
+    csv_bytes = output.getvalue().encode('utf-8')
+
+    # 2. Construct filename and description
+    clean_symbol = payload.symbol.replace(":", "_").replace(" ", "_")
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"trade_ledger_{clean_symbol}_{timestamp_str}.csv"
+
+    caption = (
+        f"📋 <b>Backtest Trade Ledger Sheet</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📂 <b>Strategy Name:</b> {payload.strategy_name}\n"
+        f"⚡ <b>Symbol:</b> {payload.symbol}\n"
+        f"📅 <b>Period:</b> {payload.from_date} to {payload.to_date}\n"
+        f"💼 <b>Total Trades:</b> {len(payload.trades)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    try:
+        success = await engine_instance.telegram_bot.send_document(
+            file_content=csv_bytes,
+            filename=filename,
+            caption=caption
+        )
+        if success:
+            return {"status": "SUCCESS", "message": "Trade ledger sheet successfully dispatched to Telegram."}
+        else:
+            return {"status": "ERROR", "message": "Failed to send ledger sheet. Check Telegram credentials or network."}
+    except Exception as e:
+        logger.exception("Error sending telegram document")
+        return {"status": "ERROR", "message": f"Telegram Document Error: {str(e)}"}
+
 @app.post("/api/trades/{trade_id}/exit")
 async def force_exit_trade(trade_id: int):
     success = await engine_instance.force_exit_trade(trade_id)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to execute force exit or trade already closed")
     return {"status": "SUCCESS"}
+
+@app.get("/api/engine/status")
+async def get_engine_status():
+    engine_status = "RUNNING"
+    if not engine_instance.running:
+        engine_status = "STOPPED"
+    elif engine_instance.paused:
+        engine_status = "PAUSED"
+        
+    is_paper_running = any(strategy.active and strategy.paper_trade for strategy in engine_instance.active_strategies.values())
+    is_live_running = any(strategy.active and not strategy.paper_trade for strategy in engine_instance.active_strategies.values())
+    
+    return {
+        "status": engine_status,
+        "is_paper_running": is_paper_running,
+        "is_live_running": is_live_running,
+        "active_instances_count": len(engine_instance.active_strategies)
+    }
+
+@app.post("/api/engine/pause")
+async def pause_engine():
+    await engine_instance.pause()
+    return {"status": "SUCCESS", "message": "Engine paused successfully."}
+
+@app.post("/api/engine/stop")
+async def stop_engine():
+    await engine_instance.stop()
+    return {"status": "SUCCESS", "message": "Engine stopped successfully."}
+
+@app.post("/api/engine/resume")
+async def resume_engine():
+    await engine_instance.resume()
+    return {"status": "SUCCESS", "message": "Engine resumed successfully."}
 
 @app.get("/api/summary", response_model=List[DailySummary])
 def get_daily_summaries(session: Session = Depends(get_session)):

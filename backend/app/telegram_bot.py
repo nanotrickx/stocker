@@ -48,6 +48,34 @@ class TelegramBot:
             logger.error(f"Error while dispatching telegram message: {e}")
             return False
 
+    async def send_document(self, file_content: bytes, filename: str, caption: Optional[str] = None) -> bool:
+        """Sends a raw file as a document attachment to the Telegram chat."""
+        if not self.token or not self.chat_id:
+            logger.info(f"[TELEGRAM LOG OUT]: (Document '{filename}' not sent because credentials are missing)")
+            return False
+
+        url = f"https://api.telegram.org/bot{self.token}/sendDocument"
+        files = {
+            "document": (filename, file_content, "text/csv")
+        }
+        data = {
+            "chat_id": self.chat_id
+        }
+        if caption:
+            data["caption"] = caption
+
+        try:
+            response = await self.client.post(url, data=data, files=files, timeout=25.0)
+            if response.status_code == 200:
+                logger.info(f"Telegram document '{filename}' sent successfully.")
+                return True
+            else:
+                logger.error(f"Failed to send Telegram document. Response: {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Error while dispatching telegram document: {e}")
+            return False
+
     async def generate_and_send_daily_summary(self, orb_states: Optional[dict] = None) -> Optional[DailySummary]:
         """
         Gathers all trades closed today, computes metrics (Win Rate %, total P&L),

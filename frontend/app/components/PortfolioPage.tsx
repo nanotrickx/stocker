@@ -120,7 +120,7 @@ export default function PortfolioPage({ onGoToSettings }: PortfolioPageProps) {
   }
 
   return (
-    <div className="glass-panel animate-slide-in" style={{ margin: '24px', padding: '30px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className="glass-panel responsive-container animate-slide-in" style={{ padding: '30px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       
       {/* Tab Title */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

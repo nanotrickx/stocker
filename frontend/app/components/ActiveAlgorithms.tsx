@@ -14,6 +14,7 @@ interface ActiveAlgorithmsProps {
   onDeleteTemplate: (id: string) => void;
   onSendTelegramStatus?: (id: number) => void;
   strategyLogs?: any[];
+  hideBlueprints?: boolean;
 }
 
 export default function ActiveAlgorithms({
@@ -26,6 +27,7 @@ export default function ActiveAlgorithms({
   onDeleteTemplate,
   onSendTelegramStatus,
   strategyLogs = [],
+  hideBlueprints = false,
 }: ActiveAlgorithmsProps) {
 
   const [selectedInstance, setSelectedInstance] = React.useState<StrategyInstance | null>(null);
@@ -59,12 +61,13 @@ export default function ActiveAlgorithms({
   }, [selectedInstance]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px', margin: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px', margin: hideBlueprints ? '0' : '24px' }}>
       
       {/* ──────────────────────────────────────────────────────── */}
       {/* SECTION 1: STRATEGY BLUEPRINT LIBRARY */}
       {/* ──────────────────────────────────────────────────────── */}
-      <div className="glass-panel animate-slide-in" style={{ padding: '24px' }}>
+      {!hideBlueprints && (
+        <div className="glass-panel animate-slide-in" style={{ padding: '24px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <div>
             <h2 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
@@ -93,6 +96,7 @@ export default function ActiveAlgorithms({
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
             {templates.map((tmpl) => {
               const sType = tmpl.strategy_type || 'custom';
+              const isOrb = sType === 'orb_breakout';
               return (
                 <div 
                   key={tmpl.id} 
@@ -101,13 +105,15 @@ export default function ActiveAlgorithms({
                     display: 'flex', 
                     flexDirection: 'column', 
                     gap: '12px', 
-                    background: 'rgba(15, 10, 25, 0.4)', 
-                    border: '1px solid rgba(255, 255, 255, 0.04)' 
+                    background: 'var(--sub-panel-bg)', 
+                    border: '1px solid var(--border-glass)',
+                    borderLeft: isOrb ? '3px solid #F59E0B' : '3px solid #6366F1',
+                    paddingLeft: '18px'
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div>
-                      <h3 style={{ fontSize: '15px', fontWeight: 700 }}>{tmpl.name}</h3>
+                      <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)' }}>{tmpl.name}</h3>
                       <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>ID: {tmpl.id}</span>
                     </div>
 
@@ -127,7 +133,7 @@ export default function ActiveAlgorithms({
                     {tmpl.description || 'Custom mathematical logic rule set.'}
                   </p>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.03)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '10px', borderTop: '1px solid var(--border-glass-subtle)' }}>
                     {tmpl.id !== 'orb_breakout' ? (
                       <button 
                         onClick={() => onDeleteTemplate(tmpl.id)} 
@@ -152,6 +158,7 @@ export default function ActiveAlgorithms({
           </div>
         )}
       </div>
+      )}
 
       {/* ──────────────────────────────────────────────────────── */}
       {/* SECTION 2: RUNNING DEPLOYMENTS / INSTANCES */}
@@ -196,19 +203,19 @@ export default function ActiveAlgorithms({
                     <tr 
                       key={inst.id} 
                       style={{ 
-                        borderBottom: '1px solid rgba(255,255,255,0.03)', 
+                        borderBottom: '1px solid var(--border-glass-subtle)', 
                         background: inst.active ? 'rgba(16, 185, 129, 0.02)' : 'transparent',
                         transition: 'background 0.2s' 
                       }}
                     >
                       {/* Name */}
-                      <td style={{ padding: '16px', fontWeight: 600, color: '#fff' }}>
+                      <td style={{ padding: '16px', fontWeight: 600, color: 'var(--text-primary)' }}>
                         {inst.name}
                       </td>
 
                       {/* Symbol */}
                       <td style={{ padding: '16px' }}>
-                        <span style={{ fontFamily: 'monospace', background: 'rgba(0,0,0,0.3)', padding: '4px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                        <span style={{ fontFamily: 'monospace', background: 'var(--glass-bg-accent)', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-glass-subtle)' }}>
                           {inst.symbol}
                         </span>
                       </td>
@@ -219,7 +226,7 @@ export default function ActiveAlgorithms({
                       </td>
 
                       {/* Qty */}
-                      <td style={{ padding: '16px', color: '#fff' }}>
+                      <td style={{ padding: '16px', color: 'var(--text-primary)' }}>
                         {qty}
                       </td>
 
@@ -351,16 +358,16 @@ export default function ActiveAlgorithms({
           zIndex: 9999, padding: '20px'
         }}>
           <div className="glass-panel animate-slide-in" style={{
-            width: '100%', maxWidth: '1050px', background: 'rgba(15, 10, 25, 0.92)',
-            border: '1px solid rgba(139, 92, 246, 0.3)', borderRadius: '16px',
-            padding: '24px', boxShadow: '0 0 30px rgba(139, 92, 246, 0.25)',
+            width: '100%', maxWidth: '1050px', background: 'var(--panel-glass)',
+            border: '1px solid var(--border-glass)', borderRadius: '16px',
+            padding: '24px', boxShadow: 'var(--shadow-premium)',
             maxHeight: '90vh', display: 'flex', flexDirection: 'column', gap: '20px'
           }}>
             {/* Modal Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--border-glass)', paddingBottom: '16px' }}>
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)' }}>
                     {selectedInstance.name}
                   </h3>
                   <span style={{
@@ -379,7 +386,7 @@ export default function ActiveAlgorithms({
 
               <button 
                 onClick={() => setSelectedInstance(null)}
-                style={{ background: 'rgba(255,255,255,0.05)', border: 'none', color: '#fff', borderRadius: '50%', padding: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                style={{ background: 'var(--glass-bg-subtle)', border: '1px solid var(--border-glass)', color: 'var(--text-primary)', borderRadius: '50%', padding: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 className="hover-red"
               >
                 <X size={18} />
@@ -463,7 +470,7 @@ export default function ActiveAlgorithms({
                     optionChain.broker === 'OFFLINE' ? (
                       <div style={{ display: 'flex', flex: 1, justifyContent: 'center', alignItems: 'center', color: 'var(--accent-red)', fontSize: '12px', flexDirection: 'column', gap: '12px', textAlign: 'center', padding: '16px' }}>
                         <span style={{ fontSize: '24px' }}>⚠️</span>
-                        <span style={{ fontWeight: 700, fontSize: '13px', color: '#fff' }}>Broker Data Feed is Offline</span>
+                        <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>Broker Data Feed is Offline</span>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', maxWidth: '280px', lineHeight: '1.5' }}>
                           Real-time option premiums are currently unavailable because the broker feed has disconnected. Simulator sandbox fallbacks have been strictly disabled for strategy safety.
                         </span>
@@ -471,10 +478,10 @@ export default function ActiveAlgorithms({
                     ) : (
                       <>
                         {/* Metric Summary Bar */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'var(--card-bg)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
                           <div>
                             <span style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block' }}>UNDERLYING SPOT</span>
-                            <span style={{ fontSize: '14px', fontWeight: 800, color: '#fff', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                               {optionChain.underlying.replace('NSE:', '')} @ {optionChain.spot_price > 0 ? `₹${optionChain.spot_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : 'N/A'}
                             </span>
                           </div>
@@ -490,7 +497,7 @@ export default function ActiveAlgorithms({
                         <div style={{ flex: 1, overflowY: 'auto', marginTop: '12px' }}>
                           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
                             <thead>
-                              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'var(--text-muted)', fontSize: '10px' }}>
+                              <tr style={{ borderBottom: '1px solid var(--border-glass-subtle)', color: 'var(--text-muted)', fontSize: '10px' }}>
                                 <th style={{ padding: '6px', textAlign: 'left' }}>CALL PREMIUM (CE)</th>
                                 <th style={{ padding: '6px' }}>STRIKE PRICE</th>
                                 <th style={{ padding: '6px', textAlign: 'right' }}>PUT PREMIUM (PE)</th>

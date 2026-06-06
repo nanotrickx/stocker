@@ -7,8 +7,8 @@ import { API_BASE } from '../config';
 interface Strategy { id: string; name: string; }
 interface JournalEntry { ts: string; action: string; price: number; qty?: number; pnl?: number; reason: string[]; note?: string; capital: number; }
 interface VizBar { ts: string; open: number; high: number; low: number; close: number; volume: number; signal: string; trade_state: string; indicators: Record<string, any>; }
-interface SimTrade { symbol: string; instrument_type: string; entry_time: string; exit_time: string; qty: number; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; exit_reason: string; }
-interface Summary { initial_capital: number; final_capital: number; net_pnl: number; total_return_pct: number; total_trades: number; profitable_trades: number; losing_trades: number; win_rate: number; max_drawdown_pct: number; }
+interface SimTrade { symbol: string; instrument_type: string; entry_time: string; exit_time: string; qty: number; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; exit_reason: string; gross_pnl?: number; charges?: number; index_breakout_time?: string | null; index_breakout_price?: number | null; option_breakout_time?: string | null; option_breakout_price?: number | null; }
+interface Summary { initial_capital: number; final_capital: number; net_pnl: number; total_return_pct: number; total_trades: number; profitable_trades: number; losing_trades: number; win_rate: number; max_drawdown_pct: number; total_charges?: number; profit_factor?: number; sharpe_ratio?: number; }
 interface BacktestResult { status: string; message?: string; meta?: Record<string, any>; summary: Summary; equity_curve: { date: string; balance: number }[]; visualization: VizBar[]; trades: SimTrade[]; journal: JournalEntry[]; logs?: string[]; }
 
 function parseTimestampToUTC(tsStr: string): UTCTimestamp {
@@ -26,7 +26,7 @@ function parseTimestampToUTC(tsStr: string): UTCTimestamp {
   return Math.floor(Date.UTC(year, month, day, hour, minute, second) / 1000) as UTCTimestamp;
 }
 
-function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) {
+function LightweightCandleChart({ visualization, theme = 'dark' }: { visualization: VizBar[], theme?: string }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
 
@@ -34,16 +34,17 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
     if (!chartContainerRef.current) return;
 
     const container = chartContainerRef.current;
+    const isLight = theme === 'light';
     const chart = createChart(container, {
       width: container.clientWidth,
       height: 360,
       layout: {
-        background: { type: ColorType.Solid, color: 'rgba(0, 0, 0, 0.4)' },
-        textColor: '#d1d4dc',
+        background: { type: ColorType.Solid, color: isLight ? 'rgba(0, 0, 0, 0.02)' : 'rgba(0, 0, 0, 0.4)' },
+        textColor: isLight ? '#4B5563' : '#d1d4dc',
       },
       grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+        vertLines: { color: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)' },
+        horzLines: { color: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)' },
       },
       timeScale: {
         timeVisible: true,
@@ -140,12 +141,12 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
           top: '10px',
           right: '10px',
           zIndex: 10,
-          background: 'rgba(255, 255, 255, 0.08)',
-          border: '1px solid rgba(255, 255, 255, 0.15)',
+          background: 'var(--glass-bg-accent)',
+          border: '1px solid var(--border-glass-medium)',
           borderRadius: '6px',
           padding: '6px 10px',
           fontSize: '11px',
-          color: '#fff',
+          color: 'var(--text-primary)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
@@ -154,12 +155,12 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
           transition: 'all 0.2s',
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
-          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+          e.currentTarget.style.background = 'var(--panel-glass-hover)';
+          e.currentTarget.style.borderColor = 'var(--border-glass-medium)';
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+          e.currentTarget.style.background = 'var(--glass-bg-accent)';
+          e.currentTarget.style.borderColor = 'var(--border-glass)';
         }}
       >
         📷 Share JPEG
@@ -168,7 +169,7 @@ function LightweightCandleChart({ visualization }: { visualization: VizBar[] }) 
   );
 }
 
-function LightweightOptionChart({ visualization, type }: { visualization: VizBar[], type: 'CE' | 'PE' }) {
+function LightweightOptionChart({ visualization, type, theme = 'dark' }: { visualization: VizBar[], type: 'CE' | 'PE', theme?: string }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
 
@@ -176,16 +177,17 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
     if (!chartContainerRef.current) return;
 
     const container = chartContainerRef.current;
+    const isLight = theme === 'light';
     const chart = createChart(container, {
       width: container.clientWidth,
       height: 260,
       layout: {
-        background: { type: ColorType.Solid, color: 'rgba(0, 0, 0, 0.4)' },
-        textColor: '#d1d4dc',
+        background: { type: ColorType.Solid, color: isLight ? 'rgba(0, 0, 0, 0.02)' : 'rgba(0, 0, 0, 0.4)' },
+        textColor: isLight ? '#4B5563' : '#d1d4dc',
       },
       grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+        vertLines: { color: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)' },
+        horzLines: { color: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)' },
       },
       timeScale: {
         timeVisible: true,
@@ -299,12 +301,12 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
           top: '10px',
           right: '10px',
           zIndex: 10,
-          background: 'rgba(255, 255, 255, 0.08)',
-          border: '1px solid rgba(255, 255, 255, 0.15)',
+          background: 'var(--glass-bg-accent)',
+          border: '1px solid var(--border-glass-medium)',
           borderRadius: '6px',
           padding: '6px 10px',
           fontSize: '11px',
-          color: '#fff',
+          color: 'var(--text-primary)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
@@ -313,12 +315,12 @@ function LightweightOptionChart({ visualization, type }: { visualization: VizBar
           transition: 'all 0.2s',
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
-          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+          e.currentTarget.style.background = 'var(--panel-glass-hover)';
+          e.currentTarget.style.borderColor = 'var(--border-glass-medium)';
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+          e.currentTarget.style.background = 'var(--glass-bg-accent)';
+          e.currentTarget.style.borderColor = 'var(--border-glass)';
         }}
       >
         📷 Share JPEG
@@ -338,7 +340,7 @@ const getLotSize = (symbol: string): number => {
   return 1;
 };
 
-export default function BacktestPage() {
+export default function BacktestPage({ theme = 'dark' }: { theme?: string }) {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [stratId, setStratId] = useState('');
   const [symbol, setSymbol] = useState('NSE:NIFTY 50');
@@ -353,6 +355,9 @@ export default function BacktestPage() {
   const [days, setDays] = useState(30);
   const [capital, setCapital] = useState(100000);
   const [lots, setLots] = useState(1);
+  const [slippagePct, setSlippagePct] = useState(0.0);
+  const [trailSlPct, setTrailSlPct] = useState('');
+  const [chargesPerTrade, setChargesPerTrade] = useState(40.0);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -364,6 +369,10 @@ export default function BacktestPage() {
   const [telegramSent, setTelegramSent] = useState(false);
   const [telegramError, setTelegramError] = useState<string | null>(null);
 
+  const [telegramLedgerSending, setTelegramLedgerSending] = useState(false);
+  const [telegramLedgerSent, setTelegramLedgerSent] = useState(false);
+  const [telegramLedgerError, setTelegramLedgerError] = useState<string | null>(null);
+
   useEffect(() => {
     fetch(`${API_BASE}/api/strategies`).then(r => r.json()).then(d => { setStrategies(d); if (d.length > 0) setStratId(d[0].id); }).catch(() => { });
   }, []);
@@ -373,7 +382,17 @@ export default function BacktestPage() {
     setRunning(true); setError(null); setResult(null);
     setTelegramSent(false); setTelegramError(null);
     try {
-      const body: any = { strategy_id: stratId, symbol, instrument_type: instrType, days, initial_capital: capital, lots };
+      const body: any = {
+        strategy_id: stratId,
+        symbol,
+        instrument_type: instrType,
+        days,
+        initial_capital: capital,
+        lots,
+        slippage_pct: slippagePct,
+        trail_sl_pct: parseFloat(trailSlPct) || undefined,
+        charges_per_trade: chargesPerTrade,
+      };
       if (instrType !== 'STOCK') { body.strike_price = parseFloat(strikePrice) || undefined; body.expiry_date = expiryDate || undefined; }
       if (dateMode === 'range' && fromDate && toDate) { body.from_date = fromDate; body.to_date = toDate; }
       if (dateMode === 'single' && singleDay) { body.single_day = singleDay; body.interval = interval; }
@@ -437,11 +456,128 @@ export default function BacktestPage() {
     }
   };
 
+  const sendLedgerToTelegram = async () => {
+    if (!result || !result.trades || result.trades.length === 0) return;
+    setTelegramLedgerSending(true);
+    setTelegramLedgerSent(false);
+    setTelegramLedgerError(null);
+    try {
+      const activeStrategy = strategies.find(s => s.id === stratId);
+      const strategyName = activeStrategy ? activeStrategy.name : 'Unknown Strategy';
+      
+      const body = {
+        strategy_name: strategyName,
+        symbol: symbol,
+        from_date: result.meta?.from ? result.meta.from.substring(0, 10) : (fromDate || 'N/A'),
+        to_date: result.meta?.to ? result.meta.to.substring(0, 10) : (toDate || 'N/A'),
+        trades: result.trades.map(t => ({
+          entry_time: t.entry_time,
+          exit_time: t.exit_time,
+          symbol: t.symbol,
+          instrument_type: t.instrument_type,
+          quantity: t.qty,
+          entry_price: t.entry_price,
+          exit_price: t.exit_price,
+          gross_pnl: t.gross_pnl !== undefined ? t.gross_pnl : t.pnl,
+          charges: t.charges !== undefined ? t.charges : 0,
+          pnl: t.pnl,
+          pnl_pct: t.pnl_pct,
+          index_breakout_time: t.index_breakout_time || 'N/A',
+          index_breakout_price: t.index_breakout_price,
+          option_breakout_time: t.option_breakout_time || 'N/A',
+          option_breakout_price: t.option_breakout_price,
+          exit_reason: t.exit_reason
+        }))
+      };
+
+      const res = await fetch(`${API_BASE}/api/backtest/telegram-ledger-document`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (data.status === 'SUCCESS') {
+        setTelegramLedgerSent(true);
+        setTimeout(() => setTelegramLedgerSent(false), 3000);
+      } else {
+        setTelegramLedgerError(data.message || 'Failed to dispatch ledger sheet.');
+      }
+    } catch {
+      setTelegramLedgerError('Could not reach backend server.');
+    } finally {
+      setTelegramLedgerSending(false);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (!result || result.trades.length === 0) return;
+    
+    const headers = [
+      'Entry Time', 'Exit Time', 'Symbol', 'Type', 'Lots', 'Lot Size', 'Qty', 
+      'Buy Price', 'Sell Price', '1 Lot Cost', 'Total Buy Price', 
+      'Gross P&L', 'Charges', 'Net P&L', 'P&L %', 
+      'Spot Trigger Time', 'Spot Trigger Price', 'Opt Trigger Time', 'Opt Trigger Price', 
+      'Exit Reason'
+    ];
+    
+    const rows = result.trades.map(t => {
+      const lotSize = getLotSize(t.symbol);
+      const lotsCount = t.qty / lotSize;
+      const oneLotCost = lotSize * t.entry_price;
+      const totalBuyPrice = t.qty * t.entry_price;
+      const grossPnl = t.gross_pnl !== undefined ? t.gross_pnl : t.pnl;
+      const charges = t.charges !== undefined ? t.charges : 0;
+      
+      return [
+        t.entry_time,
+        t.exit_time,
+        t.symbol,
+        t.instrument_type,
+        lotsCount % 1 === 0 ? lotsCount : lotsCount.toFixed(1),
+        lotSize,
+        t.qty,
+        t.entry_price.toFixed(2),
+        t.exit_price.toFixed(2),
+        oneLotCost.toFixed(2),
+        totalBuyPrice.toFixed(2),
+        grossPnl.toFixed(2),
+        charges.toFixed(2),
+        t.pnl.toFixed(2),
+        t.pnl_pct.toFixed(2),
+        t.index_breakout_time || 'N/A',
+        t.index_breakout_price !== undefined && t.index_breakout_price !== null ? t.index_breakout_price.toFixed(2) : 'N/A',
+        t.option_breakout_time || 'N/A',
+        t.option_breakout_price !== undefined && t.option_breakout_price !== null ? t.option_breakout_price.toFixed(2) : 'N/A',
+        t.exit_reason
+      ];
+    });
+    
+    const csvContent = "\uFEFF" + [
+      headers.join(','),
+      ...rows.map(e => e.map(val => {
+        const strVal = String(val);
+        if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
+          return `"${strVal.replace(/"/g, '""')}"`;
+        }
+        return strVal;
+      }).join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `trade_ledger_${result.meta?.symbol?.replace(':', '_') || 'backtest'}_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const pnlColor = (v: number) => v >= 0 ? '#10B981' : '#EF4444';
   const signalColor = (s: string) => s === 'BUY' ? '#10B981' : s === 'SELL' ? '#EF4444' : 'rgba(255,255,255,0.15)';
 
   return (
-    <div style={{ margin: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div className="responsive-container" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
       {/* ── Header ── */}
       <div className="glass-panel" style={{ padding: '24px' }}>
@@ -555,7 +691,7 @@ export default function BacktestPage() {
                       style={{
                         padding: '9px 36px 9px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 500,
                         background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.3)',
-                        color: '#fff', cursor: 'pointer', outline: 'none',
+                        color: 'var(--text-primary)', cursor: 'pointer', outline: 'none',
                         appearance: 'none', WebkitAppearance: 'none',
                       }}
                     />
@@ -583,7 +719,7 @@ export default function BacktestPage() {
                       style={{
                         padding: '9px 36px 9px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 500,
                         background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
-                        color: '#fff', cursor: 'pointer', outline: 'none',
+                        color: 'var(--text-primary)', cursor: 'pointer', outline: 'none',
                         appearance: 'none', WebkitAppearance: 'none', minWidth: '170px',
                       }}
                     />
@@ -647,6 +783,24 @@ export default function BacktestPage() {
           <input type="number" min={1} value={lots} onChange={e => setLots(Math.max(1, Number(e.target.value)))} className="input-glass" style={{ padding: '10px', fontSize: '13px' }} />
         </div>
 
+        {/* Slippage */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Slippage (%)</label>
+          <input type="number" step={0.01} min={0} value={slippagePct} onChange={e => setSlippagePct(Number(e.target.value))} placeholder="e.g. 0.05" className="input-glass" style={{ padding: '10px', fontSize: '13px' }} />
+        </div>
+
+        {/* Trailing Stop Loss */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Trailing SL (%)</label>
+          <input type="number" step={0.1} min={0} value={trailSlPct} onChange={e => setTrailSlPct(e.target.value)} placeholder="Optional (e.g. 2.0)" className="input-glass" style={{ padding: '10px', fontSize: '13px' }} />
+        </div>
+
+        {/* Charges / Trade */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Charges / Trade (₹)</label>
+          <input type="number" min={0} value={chargesPerTrade} onChange={e => setChargesPerTrade(Number(e.target.value))} className="input-glass" style={{ padding: '10px', fontSize: '13px' }} />
+        </div>
+
         {/* Run button */}
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>
           <button onClick={run} disabled={running || strategies.length === 0} className="btn-primary"
@@ -708,10 +862,12 @@ export default function BacktestPage() {
           {/* KPI cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '14px' }}>
             {[
-              { label: 'Net P&L', val: `${result.summary.net_pnl >= 0 ? '+' : ''}₹${result.summary.net_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, sub: `${result.summary.total_return_pct}% return`, color: pnlColor(result.summary.net_pnl), border: true },
+              { label: 'Net P&L', val: `${result.summary.net_pnl >= 0 ? '+' : ''}₹${result.summary.net_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, sub: `${result.summary.total_return_pct}% return (Charges: ₹${(result.summary.total_charges ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })})`, color: pnlColor(result.summary.net_pnl), border: true },
               { label: 'Final Capital', val: `₹${result.summary.final_capital.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, sub: `Started ₹${result.summary.initial_capital.toLocaleString('en-IN')}`, color: '#fff' },
               { label: 'Win Rate', val: `${result.summary.win_rate}%`, sub: `${result.summary.profitable_trades}W / ${result.summary.losing_trades}L`, color: '#6366F1' },
               { label: 'Total Trades', val: `${result.summary.total_trades}`, sub: `Max drawdown ${result.summary.max_drawdown_pct}%`, color: '#F59E0B' },
+              { label: 'Profit Factor', val: `${(result.summary.profit_factor ?? 0).toFixed(2)}`, sub: `Gross profits / losses`, color: (result.summary.profit_factor ?? 0) >= 1.0 ? '#10B981' : '#EF4444' },
+              { label: 'Sharpe Ratio', val: `${(result.summary.sharpe_ratio ?? 0).toFixed(2)}`, sub: `Risk-adjusted return`, color: (result.summary.sharpe_ratio ?? 0) >= 1.0 ? '#10B981' : '#F59E0B' },
             ].map(k => (
               <div key={k.label} className="glass-card" style={{ padding: '18px', borderLeft: k.border ? `3px solid ${k.color}` : undefined }}>
                 <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{k.label}</span>
@@ -847,7 +1003,7 @@ export default function BacktestPage() {
               </div>
               {/* Candlestick chart using tradingview lightweight-charts */}
               <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '16px' }}>
-                <LightweightCandleChart visualization={result.visualization} />
+                <LightweightCandleChart visualization={result.visualization} theme={theme} />
               </div>
               <div style={{ display: 'flex', gap: '16px', marginTop: '8px', fontSize: '11px' }}>
                 <span><span style={{ color: '#10B981', fontWeight: 700 }}>▲ BUY</span> Entry triggered</span>
@@ -907,7 +1063,7 @@ export default function BacktestPage() {
                   </div>
 
                   <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)' }}>
-                    <LightweightOptionChart visualization={result.visualization} type={optionChartType} />
+                    <LightweightOptionChart visualization={result.visualization} type={optionChartType} theme={theme} />
                   </div>
                 </div>
               )}
@@ -953,11 +1109,81 @@ export default function BacktestPage() {
               {result.trades.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', fontSize: '13px' }}>No trades triggered in this period.</div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                    <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#fff', margin: 0 }}>💼 Trade Ledger ({result.trades.length} trades)</h3>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <button
+                        onClick={exportToCSV}
+                        style={{
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: 'rgba(16, 185, 129, 0.15)',
+                          color: '#10B981',
+                          border: '1px solid rgba(16, 185, 129, 0.3)',
+                          transition: 'all 0.15s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)';
+                          e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.background = 'rgba(16, 185, 129, 0.15)';
+                          e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+                        }}
+                      >
+                        📥 Export Ledger (.csv)
+                      </button>
+                      <button
+                        onClick={sendLedgerToTelegram}
+                        disabled={telegramLedgerSending}
+                        style={{
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          cursor: telegramLedgerSending ? 'not-allowed' : 'pointer',
+                          background: telegramLedgerSent ? '#10B981' : 'rgba(99, 102, 241, 0.15)',
+                          color: telegramLedgerSent ? '#fff' : '#818CF8',
+                          border: telegramLedgerSent ? '1px solid #10B981' : '1px solid rgba(99, 102, 241, 0.3)',
+                          transition: 'all 0.15s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                        onMouseEnter={e => {
+                          if (!telegramLedgerSent) {
+                            e.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)';
+                            e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.5)';
+                          }
+                        }}
+                        onMouseLeave={e => {
+                          if (!telegramLedgerSent) {
+                            e.currentTarget.style.background = 'rgba(99, 102, 241, 0.15)';
+                            e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+                          }
+                        }}
+                      >
+                        {telegramLedgerSending ? '📤 Sending...' : telegramLedgerSent ? '✅ Sent to Telegram!' : '✈️ Send Sheet to Telegram'}
+                      </button>
+                    </div>
+                  </div>
+                  {telegramLedgerError && (
+                    <div style={{ display: 'flex', gap: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '10px 14px', color: '#EF4444', fontSize: '12px', marginBottom: '14px' }}>
+                      <AlertCircle size={15} style={{ flexShrink: 0 }} /><span>{telegramLedgerError}</span>
+                    </div>
+                  )}
+                  <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                        {['Entry Time', 'Exit Time', 'Symbol', 'Type', 'Lots', 'Lot Size', 'Qty', 'Buy ₹', 'Sell ₹', '1 Lot Cost', 'Total Buy Price', 'P&L', 'P&L %', 'Exit Reason'].map(h => (
+                        {['Entry Time', 'Exit Time', 'Symbol', 'Type', 'Lots', 'Lot Size', 'Qty', 'Buy ₹', 'Sell ₹', '1 Lot Cost', 'Total Buy Price', 'Gross P&L', 'Charges', 'Net P&L', 'P&L %', 'Spot Trig Time', 'Spot Trig ₹', 'Opt Trig Time', 'Opt Trig ₹', 'Exit Reason'].map(h => (
                           <th key={h} style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
                         ))}
                       </tr>
@@ -979,8 +1205,14 @@ export default function BacktestPage() {
                             <td style={{ padding: '10px 12px', fontWeight: 600 }}>₹{t.exit_price.toFixed(2)}</td>
                             <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>₹{(lotSize * t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
                             <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--text-secondary)' }}>₹{(t.qty * t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                            <td style={{ padding: '10px 12px', color: pnlColor(t.gross_pnl ?? t.pnl) }}>₹{(t.gross_pnl !== undefined ? t.gross_pnl : t.pnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                            <td style={{ padding: '10px 12px', color: '#EF4444' }}>₹{(t.charges ?? 0).toFixed(2)}</td>
                             <td style={{ padding: '10px 12px', fontWeight: 700, color: pnlColor(t.pnl) }}>{t.pnl >= 0 ? '+' : ''}₹{t.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
                             <td style={{ padding: '10px 12px', color: pnlColor(t.pnl_pct) }}>{t.pnl_pct >= 0 ? '+' : ''}{t.pnl_pct}%</td>
+                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{t.index_breakout_time || 'N/A'}</td>
+                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>{t.index_breakout_price !== undefined && t.index_breakout_price !== null ? `₹${t.index_breakout_price.toFixed(2)}` : 'N/A'}</td>
+                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{t.option_breakout_time || 'N/A'}</td>
+                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>{t.option_breakout_price !== undefined && t.option_breakout_price !== null ? `₹${t.option_breakout_price.toFixed(2)}` : 'N/A'}</td>
                             <td style={{ padding: '10px 12px' }}>
                               <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', fontWeight: 700, background: t.exit_reason === 'STOP_LOSS' ? 'rgba(239,68,68,0.1)' : t.exit_reason === 'TARGET' ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', color: t.exit_reason === 'STOP_LOSS' ? '#EF4444' : t.exit_reason === 'TARGET' ? '#10B981' : '#F59E0B' }}>
                                 {t.exit_reason}
@@ -991,6 +1223,7 @@ export default function BacktestPage() {
                       })}
                     </tbody>
                   </table>
+                </div>
                 </div>
               )}
             </div>

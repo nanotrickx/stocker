@@ -66,7 +66,7 @@ export default function SettingsPage({
   };
   
   return (
-    <div className="glass-panel animate-slide-in" style={{ margin: '24px', padding: '30px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className="glass-panel responsive-container animate-slide-in" style={{ padding: '30px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       
       {/* Page Header */}
       <div>
@@ -110,7 +110,7 @@ export default function SettingsPage({
                   style={{ accentColor: '#8B5CF6', width: '16px', height: '16px' }}
                 />
                 <div>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>Zerodha Kite Connect 🪁</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>Zerodha Kite Connect 🪁</span>
                   <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>Route trades directly via Kite Connect API keys</p>
                 </div>
               </label>
@@ -132,7 +132,7 @@ export default function SettingsPage({
                   style={{ accentColor: '#10B981', width: '16px', height: '16px' }}
                 />
                 <div>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>Alice Blue ANT API 🌐</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>Alice Blue ANT API 🌐</span>
                   <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>Route trades directly via A3 ANT REST client credentials</p>
                 </div>
               </label>
@@ -154,7 +154,7 @@ export default function SettingsPage({
                   style={{ accentColor: '#3B82F6', width: '16px', height: '16px' }}
                 />
                 <div>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>DhanHQ Rolling Options API ⚡</span>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>DhanHQ Rolling Options API ⚡</span>
                   <p style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>Run backtests and route options orders directly via Dhan API</p>
                 </div>
               </label>
@@ -217,44 +217,46 @@ export default function SettingsPage({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           
           {/* Card: Zerodha Kite Connect */}
-          <div className="glass-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ fontSize: '14px', color: '#8B5CF6', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
-              🪁 Live Broker: Zerodha Kite Connect API
-            </h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kite API Key</label>
-                <input 
-                  type="text" 
-                  value={kiteApiKey} 
-                  onChange={(e) => setKiteApiKey(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter Kite API Key"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
+          {activeBroker === 'kite' && (
+            <div className="glass-card animate-slide-in" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <h3 style={{ fontSize: '14px', color: '#8B5CF6', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
+                🪁 Live Broker: Zerodha Kite Connect API
+              </h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kite API Key</label>
+                  <input 
+                    type="text" 
+                    value={kiteApiKey} 
+                    onChange={(e) => setKiteApiKey(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter Kite API Key"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kite API Secret (or Access Token)</label>
+                  <input 
+                    type="password" 
+                    value={kiteApiSecret} 
+                    onChange={(e) => setKiteApiSecret(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter API Secret Token"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Kite API Secret (or Access Token)</label>
-                <input 
-                  type="password" 
-                  value={kiteApiSecret} 
-                  onChange={(e) => setKiteApiSecret(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter API Secret Token"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
-              </div>
-            </div>
 
-            <button 
-              className="btn-primary" 
-              onClick={() => onSaveCredentials('kite', kiteApiKey, kiteApiSecret)} 
-              style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Save size={14} /> Store Kite Connect API
-            </button>
-          </div>
+              <button 
+                className="btn-primary" 
+                onClick={() => onSaveCredentials('kite', kiteApiKey, kiteApiSecret)} 
+                style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Save size={14} /> Store Kite Connect API
+              </button>
+            </div>
+          )}
 
           {/* Card: Zerodha Connect Active Session Manager */}
           {activeBroker === 'kite' && (
@@ -319,95 +321,99 @@ export default function SettingsPage({
           )}
 
           {/* Card: Alice Blue ANT API */}
-          <div className="glass-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ fontSize: '14px', color: 'var(--accent-green)', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
-              🌐 Live Broker: Alice Blue A3 ANT API
-            </h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Alice Client ID (Username)</label>
-                <input 
-                  type="text" 
-                  value={aliceClientId} 
-                  onChange={(e) => setAliceClientId(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="e.g. AB123456"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
+          {activeBroker === 'aliceblue' && (
+            <div className="glass-card animate-slide-in" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <h3 style={{ fontSize: '14px', color: 'var(--accent-green)', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
+                🌐 Live Broker: Alice Blue A3 ANT API
+              </h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Alice Client ID (Username)</label>
+                  <input 
+                    type="text" 
+                    value={aliceClientId} 
+                    onChange={(e) => setAliceClientId(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="e.g. AB123456"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>ANT API Key</label>
+                  <input 
+                    type="password" 
+                    value={aliceApiKey} 
+                    onChange={(e) => setAliceApiKey(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter Alice Blue API Key"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>ANT API Key</label>
-                <input 
-                  type="password" 
-                  value={aliceApiKey} 
-                  onChange={(e) => setAliceApiKey(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter Alice Blue API Key"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
-              </div>
-            </div>
 
-            <button 
-              className="btn-primary" 
-              onClick={() => onSaveCredentials('aliceblue', aliceClientId, aliceApiKey)} 
-              style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Save size={14} /> Store Alice Blue API
-            </button>
-          </div>
+              <button 
+                className="btn-primary" 
+                onClick={() => onSaveCredentials('aliceblue', aliceClientId, aliceApiKey)} 
+                style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Save size={14} /> Store Alice Blue API
+              </button>
+            </div>
+          )}
 
           {/* Card: DhanHQ API */}
-          <div className="glass-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ fontSize: '14px', color: '#3B82F6', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
-              ⚡ Live Broker: DhanHQ Options API
-            </h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Client ID / API Key</label>
-                <input 
-                  type="text" 
-                  value={dhanClientId} 
-                  onChange={(e) => setDhanClientId(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter Dhan Client ID or API Key (e.g. 9203be84)"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
+          {activeBroker === 'dhan' && (
+            <div className="glass-card animate-slide-in" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <h3 style={{ fontSize: '14px', color: '#3B82F6', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
+                ⚡ Live Broker: DhanHQ Options API
+              </h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Client ID / API Key</label>
+                  <input 
+                    type="text" 
+                    value={dhanClientId} 
+                    onChange={(e) => setDhanClientId(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter Dhan Client ID or API Key (e.g. 9203be84)"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Trading PIN / API Secret</label>
+                  <input 
+                    type="password" 
+                    value={dhanAccessToken} 
+                    onChange={(e) => setDhanAccessToken(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter 6-digit Dhan Trading PIN or API Secret"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan TOTP Secret Key (For 24h Auto-Login)</label>
+                  <input 
+                    type="password" 
+                    value={dhanTotpSecret} 
+                    onChange={(e) => setDhanTotpSecret(e.target.value)} 
+                    className="input-glass" 
+                    placeholder="Enter TOTP Secret Key for automatic daily token generation"
+                    style={{ padding: '10px', fontSize: '12px' }}
+                  />
+                </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan Trading PIN / API Secret</label>
-                <input 
-                  type="password" 
-                  value={dhanAccessToken} 
-                  onChange={(e) => setDhanAccessToken(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter 6-digit Dhan Trading PIN or API Secret"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Dhan TOTP Secret Key (For 24h Auto-Login)</label>
-                <input 
-                  type="password" 
-                  value={dhanTotpSecret} 
-                  onChange={(e) => setDhanTotpSecret(e.target.value)} 
-                  className="input-glass" 
-                  placeholder="Enter TOTP Secret Key for automatic daily token generation"
-                  style={{ padding: '10px', fontSize: '12px' }}
-                />
-              </div>
-            </div>
 
-            <button 
-              className="btn-primary" 
-              onClick={() => onSaveCredentials('dhan', dhanClientId, dhanAccessToken, dhanTotpSecret)} 
-              style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Save size={14} /> Store Dhan API
-            </button>
-          </div>
+              <button 
+                className="btn-primary" 
+                onClick={() => onSaveCredentials('dhan', dhanClientId, dhanAccessToken, dhanTotpSecret)} 
+                style={{ padding: '8px 16px', fontSize: '12px', borderRadius: '6px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Save size={14} /> Store Dhan API
+              </button>
+            </div>
+          )}
 
         </div>
 

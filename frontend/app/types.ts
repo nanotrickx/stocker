@@ -1,11 +1,13 @@
 export interface IndicatorCondition {
   indicator: string;
   period?: number;
+  offset?: number;
   comparison: string;
   target: string;
   value?: number;
   target_indicator?: string;
   target_period?: number;
+  target_offset?: number;
 }
 
 export type StrategyType = 'custom' | 'orb_breakout';

@@ -484,6 +484,8 @@ class DhanMarketDataProvider(BaseMarketDataProvider):
         # Dhan takes YYYY-MM-DD
         fd = from_date.split(" ")[0] if from_date else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         td = to_date.split(" ")[0] if to_date else datetime.now().strftime("%Y-%m-%d")
+        
+        original_td = td
 
         # 3. Call Dhan Charts API
         is_intraday = interval != "day"
@@ -533,14 +535,17 @@ class DhanMarketDataProvider(BaseMarketDataProvider):
                 except Exception:
                     dt = datetime.now()
 
-                result.append({
-                    "date": dt.strftime("%Y-%m-%d %H:%M:%S" if is_intraday else "%Y-%m-%d"),
-                    "open": float(body["open"][idx]),
-                    "high": float(body["high"][idx]),
-                    "low": float(body["low"][idx]),
-                    "close": float(body["close"][idx]),
-                    "volume": int(body.get("volume", [0] * size)[idx]),
-                })
+                dt_str = dt.strftime("%Y-%m-%d")
+                # strictly filter by requested date range
+                if fd <= dt_str <= original_td:
+                    result.append({
+                        "date": dt.strftime("%Y-%m-%d %H:%M:%S" if is_intraday else "%Y-%m-%d"),
+                        "open": float(body["open"][idx]),
+                        "high": float(body["high"][idx]),
+                        "low": float(body["low"][idx]),
+                        "close": float(body["close"][idx]),
+                        "volume": int(body.get("volume", [0] * size)[idx]),
+                    })
 
             logger.info(f"Successfully loaded {len(result)} real high-fidelity options candles from Dhan.")
             return result

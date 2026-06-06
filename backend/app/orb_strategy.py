@@ -106,6 +106,10 @@ class ORBState:
     pe_option_already_broke_out: bool = False
     index_high_broke_out: bool = False
     index_low_broke_out: bool = False
+    index_breakout_time: Optional[str] = None
+    index_breakout_price: Optional[float] = None
+    option_breakout_time: Optional[str] = None
+    option_breakout_price: Optional[float] = None
     trades_taken: List[str] = field(default_factory=list)
     first_trade_hit_sl: bool = False
 
@@ -204,6 +208,7 @@ class ORBStrategyEngine:
         expiry_date: Optional[str] = None,
         slippage_pct: float = 0.0,
         trail_sl_pct: Optional[float] = None,
+        charges_per_trade: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Run ORB strategy bar-by-bar on an intraday DataFrame.
@@ -253,7 +258,9 @@ class ORBStrategyEngine:
             base_path = os.path.dirname(os.path.abspath(__file__))
             file_path = os.path.join(os.path.dirname(base_path), "data", "option_chains", day_str, f"{clean_sym}.json")
             
-            if os.path.exists(file_path):
+            # If live Dhan is available, don't use local backup option chain data
+            live_dhan_available = (provider is not None) and (provider.__class__.__name__ != "SimulatedMarketDataProvider")
+            if not live_dhan_available and os.path.exists(file_path):
                 try:
                     with open(file_path, "r") as f:
                         stored_snapshots = json.load(f)
@@ -499,9 +506,15 @@ class ORBStrategyEngine:
 
                     # Index breakout validation
                     if row["high"] > state.opening_high and "BULLISH" not in state.trades_taken:
+                        if not state.index_high_broke_out:
+                            state.index_breakout_time = ts
+                            state.index_breakout_price = round(row["high"], 2)
                         state.index_high_broke_out = True
 
                     if row["low"] < state.opening_low and "BEARISH" not in state.trades_taken:
+                        if not state.index_low_broke_out:
+                            state.index_breakout_time = ts
+                            state.index_breakout_price = round(row["low"], 2)
                         state.index_low_broke_out = True
 
                     # Double breakout check
@@ -536,6 +549,12 @@ class ORBStrategyEngine:
                         
                         state.entry_price = entry_price
                         state.entry_time = ts
+                        
+                        # Store option breakout details
+                        state.option_breakout_time = ts
+                        state.option_breakout_price = entry_price
+                        
+                        print(f"DEBUG BACKTEST ENTRY: ts={ts}, index_breakout_time={state.index_breakout_time}, option_breakout_time={state.option_breakout_time}, index_high_broke_out={state.index_high_broke_out}, index_low_broke_out={state.index_low_broke_out}")
 
                         # Determine target percentage
                         current_target_pct = 15.0 if state.first_trade_hit_sl else 10.0
@@ -624,9 +643,11 @@ class ORBStrategyEngine:
                     if exit_reason:
                         if slippage_pct > 0:
                             exit_price = round(exit_price * (1 - slippage_pct / 100.0), 2)
-                        pnl = (exit_price - state.entry_price) * self.qty
-                        state.pnl += pnl
-                        capital += pnl
+                        gross_pnl = (exit_price - state.entry_price) * self.qty
+                        trade_charges = charges_per_trade
+                        trade_net_pnl = gross_pnl - trade_charges
+                        state.pnl += trade_net_pnl
+                        capital += trade_net_pnl
                         signal = "SELL"
 
                         # Determine next state
@@ -652,11 +673,11 @@ class ORBStrategyEngine:
                             "action": "SELL",
                             "price": exit_price,
                             "qty": self.qty,
-                            "pnl": round(pnl, 2),
+                            "pnl": round(trade_net_pnl, 2),
                             "reason": [
                                 f"{exit_reason} HIT: Premium reached ₹{exit_price:.2f}",
                                 f"Entry: ₹{state.entry_price:.2f} → Exit: ₹{exit_price:.2f}",
-                                f"P&L: ₹{pnl:.2f} ({self.qty} qty)",
+                                f"Gross P&L: ₹{gross_pnl:.2f} | Charges: ₹{trade_charges:.2f} | Net P&L: ₹{trade_net_pnl:.2f} ({self.qty} qty)",
                                 f"Premium Source: {db_sell_source}",
                             ],
                             "note": note_next,
@@ -671,7 +692,9 @@ class ORBStrategyEngine:
                             "qty": self.qty,
                             "entry_price": state.entry_price,
                             "exit_price": exit_price,
-                            "pnl": round(pnl, 2),
+                            "pnl": round(trade_net_pnl, 2),
+                            "gross_pnl": round(gross_pnl, 2),
+                            "charges": round(trade_charges, 2),
                             "pnl_pct": round(((exit_price - state.entry_price) / state.entry_price) * 100, 2),
                             "exit_reason": exit_reason,
                             "opening_high": state.opening_high,
@@ -680,7 +703,17 @@ class ORBStrategyEngine:
                             "pe_option_opening_high": state.pe_option_opening_high,
                             "selected_ce_strike": state.selected_ce_strike,
                             "selected_pe_strike": state.selected_pe_strike,
+                            "index_breakout_time": state.index_breakout_time,
+                            "index_breakout_price": state.index_breakout_price,
+                            "option_breakout_time": state.option_breakout_time,
+                            "option_breakout_price": state.option_breakout_price,
                         })
+
+                        if state.phase == "WAITING_BREAKOUT":
+                            state.index_breakout_time = None
+                            state.index_breakout_price = None
+                            state.option_breakout_time = None
+                            state.option_breakout_price = None
 
                 # ── Build visualization bar ────────────────────────────
                 indicators: Dict[str, Any] = {}
@@ -790,11 +823,53 @@ class ORBStrategyEngine:
                 })
 
         # ── Build summary ──────────────────────────────────────────────
+        def calculate_profit_factor(ts) -> float:
+            if not ts:
+                return 0.0
+            gross_profit = sum(t["pnl"] for t in ts if t["pnl"] > 0)
+            gross_loss = sum(abs(t["pnl"]) for t in ts if t["pnl"] < 0)
+            if gross_loss > 0:
+                return float(round(gross_profit / gross_loss, 2))
+            return float(round(gross_profit, 2)) if gross_profit > 0 else 0.0
+
+        def calculate_sharpe_ratio(ts, eq_curve, init_cap) -> float:
+            import numpy as np
+            try:
+                import pandas as pd
+                if len(eq_curve) >= 2:
+                    df_eq = pd.DataFrame(eq_curve)
+                    df_eq['date'] = pd.to_datetime(df_eq['date'])
+                    df_daily = df_eq.set_index('date').resample('D').last().ffill()
+                    daily_balances = df_daily['balance'].values
+                    if len(daily_balances) >= 2:
+                        daily_returns = []
+                        for i in range(1, len(daily_balances)):
+                            prev_bal = daily_balances[i-1]
+                            if prev_bal > 0:
+                                daily_returns.append((daily_balances[i] - prev_bal) / prev_bal)
+                        if daily_returns and np.std(daily_returns) > 0:
+                            return float(round((np.mean(daily_returns) / np.std(daily_returns)) * np.sqrt(252), 2))
+            except Exception:
+                pass
+
+            if not ts:
+                return 0.0
+            try:
+                trade_returns = [t["pnl"] / init_cap for t in ts]
+                mean_ret = np.mean(trade_returns)
+                std_ret = np.std(trade_returns)
+                if std_ret > 0:
+                    return float(round((mean_ret / std_ret) * np.sqrt(len(ts)), 2))
+            except Exception:
+                pass
+            return 0.0
+
         total_trades = len(trades)
         profitable = sum(1 for t in trades if t["pnl"] > 0)
         losing = sum(1 for t in trades if t["pnl"] <= 0)
         net_pnl = round(capital - initial_capital, 2)
         return_pct = round((net_pnl / initial_capital) * 100, 2) if initial_capital > 0 else 0
+        total_charges = sum(t.get("charges", 0.0) for t in trades)
 
         # Max drawdown from equity curve
         max_dd = 0.0
@@ -805,6 +880,9 @@ class ORBStrategyEngine:
             dd = ((peak - pt["balance"]) / peak) * 100 if peak > 0 else 0
             if dd > max_dd:
                 max_dd = dd
+
+        profit_factor = calculate_profit_factor(trades)
+        sharpe_ratio = calculate_sharpe_ratio(trades, equity_curve, initial_capital)
 
         return {
             "status": "SUCCESS",
@@ -828,6 +906,9 @@ class ORBStrategyEngine:
                 "losing_trades": losing,
                 "win_rate": round((profitable / total_trades * 100) if total_trades > 0 else 0, 1),
                 "max_drawdown_pct": round(max_dd, 2),
+                "total_charges": round(total_charges, 2),
+                "profit_factor": profit_factor,
+                "sharpe_ratio": sharpe_ratio,
             },
             "equity_curve": equity_curve,
             "visualization": visualization,

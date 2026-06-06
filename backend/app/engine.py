@@ -24,6 +24,7 @@ class ExecutionEngine:
         }
         self.telegram_bot = None  # Injected later
         self.running = False
+        self.paused = False
         self.historical_data_cache: Dict[str, pd.DataFrame] = {}
         self.orb_states: Dict[str, ORBState] = {}  # per-strategy ORB state
         self._kite_client = None  # cached KiteConnect instance
@@ -357,8 +358,17 @@ class ExecutionEngine:
 
     async def start(self):
         """Start the trading execution engine background threads/loops."""
-        self.running = True
-        logger.info("Stocker Execution Engine Started.")
+        stopped_state = self._get_system_state("engine_stopped")
+        paused_state = self._get_system_state("engine_paused")
+        
+        self.paused = (paused_state == "true")
+        
+        if stopped_state == "true":
+            self.running = False
+            logger.info("Stocker Execution Engine startup loaded: Engine is in STOPPED state.")
+        else:
+            self.running = True
+            logger.info("Stocker Execution Engine Started.")
         
         # Load and authorize active broker client sessions dynamically on boot
         try:
@@ -410,12 +420,30 @@ class ExecutionEngine:
         except Exception as e:
             logger.warning(f"Could not load today's daily system state sent flags on startup: {e}")
 
-        asyncio.create_task(self.engine_loop())
+        if self.running:
+            asyncio.create_task(self.engine_loop())
 
     async def stop(self):
         """Stop the trading execution engine."""
         self.running = False
+        self._set_system_state("engine_stopped", "true")
         logger.info("Stocker Execution Engine Stopped.")
+
+    async def pause(self):
+        """Pause strategy evaluations in the engine."""
+        self.paused = True
+        self._set_system_state("engine_paused", "true")
+        logger.info("Stocker Execution Engine Paused.")
+
+    async def resume(self):
+        """Resume execution / start engine if stopped."""
+        self.paused = False
+        self._set_system_state("engine_paused", "false")
+        self._set_system_state("engine_stopped", "false")
+        if not self.running:
+            self.running = True
+            asyncio.create_task(self.engine_loop())
+        logger.info("Stocker Execution Engine Resumed/Started.")
 
     async def reload_strategies(self):
         """Loads and refreshes active strategy instances from the SQLite database."""
@@ -427,9 +455,9 @@ class ExecutionEngine:
             self.active_strategies = {inst.id: inst for inst in db_instances}
             logger.info(f"Reloaded {len(self.active_strategies)} active strategy instances from database.")
 
-    def select_option_strike(self, spot: float, symbol: str, option_type: str, strike_selection: str) -> float:
+    def select_option_strike(self, spot: float, symbol: str, option_type: str, strike_selection: str, strike_offset: int = 0) -> float:
         """
-        Determines the strike price based on current spot and strike rule.
+        Determines the strike price based on current spot, strike rule, and strike offset.
         - ATM: At The Money (nearest index boundary)
         - ITM: In The Money (deep in the money)
         - OTM: Out of The Money (out of the money)
@@ -438,14 +466,17 @@ class ExecutionEngine:
         atm = round(spot / step) * step
 
         if strike_selection == "ATM":
-            return atm
+            base = atm
         elif strike_selection == "ITM":
             # Call ITM is below spot, Put ITM is above spot
-            return atm - step if option_type.upper() == "CE" else atm + step
+            base = atm - step if option_type.upper() == "CE" else atm + step
         elif strike_selection == "OTM":
             # Call OTM is above spot, Put OTM is below spot
-            return atm + step if option_type.upper() == "CE" else atm - step
-        return atm
+            base = atm + step if option_type.upper() == "CE" else atm - step
+        else:
+            base = atm
+            
+        return base + (strike_offset * step)
 
     async def fetch_ohlc_candles(self, symbol: str, strategy: Optional[StrategyInstance] = None) -> pd.DataFrame:
         """
@@ -596,7 +627,7 @@ class ExecutionEngine:
         # Check conditions
         results = []
         for cond in conditions:
-            res = check_rule_condition(cond, last_row, prev_row)
+            res = check_rule_condition(cond, last_row, prev_row, df_eval)
             results.append(res)
 
         entry_triggered = all(results) if operator == "AND" else any(results)
@@ -604,7 +635,7 @@ class ExecutionEngine:
         # Performance-safe logging of condition evaluation
         cond_msgs = []
         for c, r in zip(conditions, results):
-            cond_msgs.append(f"{c.get('indicator')}({c.get('period')}) {c.get('comparison')} -> {'✓' if r else '✗'}")
+            cond_msgs.append(f"{c.get('indicator')}({c.get('period')})[offset {c.get('offset',0)}] {c.get('comparison')} -> {'✓' if r else '✗'}")
         
         self.log_strategy_activity(
             strategy.id,
@@ -619,8 +650,15 @@ class ExecutionEngine:
             strike_rule = action.get("strike_selection", "ATM")
             qty = action.get("quantity", 50)
             
-            strike = self.select_option_strike(last_price, symbol, opt_type, strike_rule)
-            option_symbol = f"{symbol}_{now_ist().strftime('%d%b%y').upper()}_{int(strike)}_{opt_type}"
+            # Resolve offsets & expiries
+            strike_offset = action.get("strike_offset", 0)
+            expiry_type = action.get("expiry_type", "WEEKLY")
+            
+            strike = self.select_option_strike(last_price, symbol, opt_type, strike_rule, strike_offset)
+            expiry_date = await self.get_expiry_date(symbol, expiry_type)
+            expiry_str = expiry_date.strftime("%d%b%y").upper() # e.g. "04JUN26"
+            
+            option_symbol = f"{symbol}_{expiry_str}_{int(strike)}_{opt_type}"
 
             broker_mode = "PAPER"
             if not strategy.paper_trade:
@@ -760,15 +798,34 @@ class ExecutionEngine:
         action = config.get("action", {})
         stop_loss_pct = action.get("stop_loss_pct", 5.0)  # 5% SL default
         target_pct = action.get("target_pct", 10.0)      # 10% Target default
+        trail_sl_pct = action.get("trail_sl_pct", 0.0)    # 0% default (no TSL)
 
         exit_triggered = False
         reason = "INDICATOR"
+
+        # Track max price since entry in memory for Trailing SL
+        if not hasattr(self, "max_trade_prices"):
+            self.max_trade_prices = {}
+            
+        trade_id = active_trade.id
+        if trade_id not in self.max_trade_prices:
+            self.max_trade_prices[trade_id] = entry_price
+        self.max_trade_prices[trade_id] = max(self.max_trade_prices[trade_id], current_ltp)
+        max_price = self.max_trade_prices[trade_id]
 
         # Check hard SL
         if pct_pnl <= -stop_loss_pct:
             exit_triggered = True
             reason = "STOP_LOSS"
             logger.info(f"🔴 Stop Loss Hit for strategy '{strategy.name}' at {pct_pnl}% P&L")
+
+        # Check Trailing SL
+        elif trail_sl_pct > 0.0:
+            trail_sl_price = max_price * (1 - trail_sl_pct / 100.0)
+            if current_ltp <= trail_sl_price:
+                exit_triggered = True
+                reason = "TRAILING_STOP_LOSS"
+                logger.info(f"🔴 Trailing Stop Loss Hit for strategy '{strategy.name}' at price {current_ltp} (Trailing SL: {trail_sl_price:.2f})")
 
         # Check hard Target
         elif pct_pnl >= target_pct:
@@ -807,20 +864,26 @@ class ExecutionEngine:
             if conditions:
                 results = []
                 for cond in conditions:
-                    res = check_rule_condition(cond, last_row, prev_row)
+                    res = check_rule_condition(cond, last_row, prev_row, df_eval)
                     results.append(res)
 
                 exit_triggered = all(results) if operator == "AND" else any(results)
                 for c, r in zip(conditions, results):
-                    cond_msgs.append(f"{c.get('indicator')}({c.get('period')}) {c.get('comparison')} -> {'✓' if r else '✗'}")
+                    cond_msgs.append(f"{c.get('indicator')}({c.get('period')})[offset {c.get('offset',0)}] {c.get('comparison')} -> {'✓' if r else '✗'}")
                 if exit_triggered:
                     reason = "INDICATOR_EXIT"
 
         custom_exit_str = f" | Exit Rules: {', '.join(cond_msgs)}" if cond_msgs else ""
+        
+        # Display Trailing SL info if TSL is active
+        tsl_status = ""
+        if trail_sl_pct > 0.0:
+            tsl_status = f" | Trailing SL Price: ₹{max_price * (1 - trail_sl_pct / 100.0):.2f} (Peak: ₹{max_price:.2f})"
+
         self.log_strategy_activity(
             strategy.id,
             strategy.name,
-            f"[EVAL] Phase: IN_POSITION ({active_trade.symbol}). LTP: ₹{current_ltp:.2f} | P&L: ₹{pnl:.2f} ({pct_pnl:.2f}% | SL: -{stop_loss_pct}%, Target: +{target_pct}%){custom_exit_str} (Triggered: {exit_triggered})"
+            f"[EVAL] Phase: IN_POSITION ({active_trade.symbol}). LTP: ₹{current_ltp:.2f} | P&L: ₹{pnl:.2f} ({pct_pnl:.2f}% | SL: -{stop_loss_pct}%, Target: +{target_pct}%{tsl_status}){custom_exit_str} (Triggered: {exit_triggered})"
         )
 
         if exit_triggered:
@@ -856,6 +919,10 @@ class ExecutionEngine:
                     strategy.name,
                     f"[TRIGGER] EXIT triggered! Symbol: {trade.symbol} @ ₹{trade.exit_price} (Reason: {reason} | P&L: ₹{trade.pnl:.2f} | Mode: {'PAPER' if strategy.paper_trade else 'LIVE'})"
                 )
+                
+                # Clean up Trailing SL max price from memory
+                if hasattr(self, "max_trade_prices") and active_trade.id in self.max_trade_prices:
+                    del self.max_trade_prices[active_trade.id]
                 
                 # Commit reason to database
                 with Session(db_engine) as session:
@@ -998,6 +1065,54 @@ class ExecutionEngine:
         except Exception as e:
             logger.debug(f"Kite dynamic expiry lookup failed: {e}")
 
+        # Dhan dynamic expiry lookup
+        if nearest_expiry_date is None:
+            try:
+                with Session(db_engine) as session:
+                    active_cred = session.exec(select(BrokerCredential).where(
+                        BrokerCredential.broker_name == "dhan",
+                        BrokerCredential.active == True
+                    )).first()
+                    
+                    if active_cred:
+                        from app.brokers.dhan import get_dhan_token
+                        dhan_token = get_dhan_token(active_cred, session)
+                        if dhan_token:
+                            import requests
+                            url = "https://api.dhan.co/v2/optionchain/expirylist"
+                            headers = {
+                                "Content-Type": "application/json",
+                                "access-token": dhan_token,
+                                "client-id": active_cred.api_key
+                            }
+                            underlying_clean = symbol.split(":")[-1].upper()
+                            under_id = 25 if "BANK" in underlying_clean else 13
+                            
+                            payload = {
+                                "UnderlyingScrip": under_id,
+                                "UnderlyingSeg": "IDX_I"
+                            }
+                            
+                            loop = asyncio.get_event_loop()
+                            resp = await loop.run_in_executor(
+                                None, 
+                                lambda: requests.post(url, json=payload, headers=headers, timeout=10)
+                            )
+                            if resp.status_code == 200:
+                                res_json = resp.json()
+                                if res_json.get("status") == "success" and res_json.get("data"):
+                                    from datetime import datetime as dt_class
+                                    exp_dates = []
+                                    for d_str in res_json["data"]:
+                                        exp_dates.append(dt_class.strptime(d_str, "%Y-%m-%d").date())
+                                    
+                                    today = now.date()
+                                    valid_exp = sorted([e for e in exp_dates if e >= today])
+                                    if valid_exp:
+                                        nearest_expiry_date = valid_exp[0]
+            except Exception as e:
+                logger.debug(f"Dhan dynamic expiry lookup failed: {e}")
+
         if nearest_expiry_date is None:
             # Fallback math (assume next Thursday)
             days_ahead = 3 - now.weekday()
@@ -1006,6 +1121,117 @@ class ExecutionEngine:
             nearest_expiry_date = (now + timedelta(days=days_ahead)).date()
             
         return nearest_expiry_date
+
+    async def get_expiry_date(self, symbol: str, expiry_type: str) -> datetime.date:
+        """Resolve dynamic expiry date: CURRENT_WEEKLY, NEXT_WEEKLY, or MONTHLY."""
+        now = now_ist()
+        all_expiries = []
+        try:
+            kite = self._get_kite_client()
+            if kite:
+                loop = asyncio.get_event_loop()
+                all_nfo = await loop.run_in_executor(None, lambda: kite.instruments("NFO"))
+                if all_nfo:
+                    opt_name = "NIFTY" if "NIFTY" in symbol and "BANK" not in symbol else "BANKNIFTY"
+                    opts = [i for i in all_nfo if i["name"] == opt_name and i["segment"] == "NFO-OPT"]
+                    if opts:
+                        from datetime import datetime as dt_class
+                        for o in opts:
+                            if o.get("expiry"):
+                                if isinstance(o["expiry"], str):
+                                    all_expiries.append(dt_class.strptime(o["expiry"], "%Y-%m-%d").date())
+                                else:
+                                    all_expiries.append(o["expiry"])
+        except Exception as e:
+            logger.debug(f"Kite dynamic expiry list lookup failed: {e}")
+
+        if not all_expiries:
+            try:
+                with Session(db_engine) as session:
+                    active_cred = session.exec(select(BrokerCredential).where(
+                        BrokerCredential.broker_name == "dhan",
+                        BrokerCredential.active == True
+                    )).first()
+                    
+                    if active_cred:
+                        from app.brokers.dhan import get_dhan_token
+                        dhan_token = get_dhan_token(active_cred, session)
+                        if dhan_token:
+                            import requests
+                            url = "https://api.dhan.co/v2/optionchain/expirylist"
+                            headers = {
+                                "Content-Type": "application/json",
+                                "access-token": dhan_token,
+                                "client-id": active_cred.api_key
+                            }
+                            underlying_clean = symbol.split(":")[-1].upper()
+                            under_id = 25 if "BANK" in underlying_clean else 13
+                            
+                            payload = {
+                                "UnderlyingScrip": under_id,
+                                "UnderlyingSeg": "IDX_I"
+                            }
+                            
+                            loop = asyncio.get_event_loop()
+                            resp = await loop.run_in_executor(
+                                None, 
+                                lambda: requests.post(url, json=payload, headers=headers, timeout=10)
+                            )
+                            if resp.status_code == 200:
+                                res_json = resp.json()
+                                if res_json.get("status") == "success" and res_json.get("data"):
+                                    from datetime import datetime as dt_class
+                                    for d_str in res_json["data"]:
+                                        all_expiries.append(dt_class.strptime(d_str, "%Y-%m-%d").date())
+            except Exception as e:
+                logger.debug(f"Dhan dynamic expiry list lookup failed: {e}")
+
+        # Filter out past expiries and sort
+        today = now.date()
+        valid_expiries = sorted(list(set([e for e in all_expiries if e >= today])))
+
+        if not valid_expiries:
+            # Fallback mathematical expiries
+            # Compute current Thursday
+            days_ahead = 3 - now.weekday()
+            if days_ahead < 0 or (days_ahead == 0 and now.time() > time(15, 30)):
+                days_ahead += 7
+            curr_thurs = (now + timedelta(days=days_ahead)).date()
+            next_thurs = curr_thurs + timedelta(days=7)
+            
+            # Estimate monthly: last Thursday of current month
+            import calendar
+            year = now.year
+            month = now.month
+            last_day = calendar.monthrange(year, month)[1]
+            last_date = datetime(year, month, last_day).date()
+            offset = (last_date.weekday() - 3) % 7
+            monthly_thurs = last_date - timedelta(days=offset)
+            if monthly_thurs < today:
+                # Get next month's last Thursday
+                next_month = month + 1 if month < 12 else 1
+                next_year = year if month < 12 else year + 1
+                last_day = calendar.monthrange(next_year, next_month)[1]
+                last_date = datetime(next_year, next_month, last_date.day).date() # Wait, last_date is already date
+                offset = (last_date.weekday() - 3) % 7
+                monthly_thurs = last_date - timedelta(days=offset)
+                
+            valid_expiries = [curr_thurs, next_thurs, monthly_thurs]
+
+        # Resolve according to type
+        etype = expiry_type.upper()
+        if etype == "CURRENT_WEEKLY" or etype == "WEEKLY":
+            return valid_expiries[0]
+        elif etype == "NEXT_WEEKLY":
+            return valid_expiries[1] if len(valid_expiries) > 1 else valid_expiries[0]
+        elif etype == "MONTHLY":
+            current_month = today.month
+            monthly_candidates = [e for e in valid_expiries if e.month == current_month]
+            if monthly_candidates:
+                return monthly_candidates[-1]
+            return valid_expiries[-1] if valid_expiries else today
+        
+        return valid_expiries[0]
 
     async def get_live_option_premiums(self, underlying_symbol: str, options: List[Tuple[float, str]]) -> Dict[Tuple[float, str], float]:
         """
@@ -1328,6 +1554,11 @@ class ExecutionEngine:
         if now_time < time(9, 15) or now_time > time(15, 15):
             return
 
+        risk = config.get("risk", {})
+        action = config.get("action", {})
+        sl_pct = risk.get("stop_loss_pct", 10.0)
+        qty = action.get("quantity", 50)
+
         # Get or create ORB state for this strategy
         state = self.get_or_create_orb_state(strategy, config, spot)
         if state.phase == "DONE":
@@ -1362,9 +1593,105 @@ class ExecutionEngine:
                 # Setup PE strike (Strictly ATM)
                 state.selected_pe_strike = round(state.opening_close / step) * step
 
-                # Set opening high on options charts mathematically
-                state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
-                state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
+                # Fetch real opening highs for the option strikes if live provider is available
+                real_ce_high = None
+                real_pe_high = None
+                
+                try:
+                    with Session(db_engine) as db_sess:
+                        active_cred = db_sess.exec(select(BrokerCredential).where(
+                            BrokerCredential.broker_name != "telegram",
+                            BrokerCredential.active == True
+                        )).first()
+                        
+                        if active_cred:
+                            broker_name = active_cred.broker_name.upper()
+                            if broker_name == "DHAN":
+                                from app.brokers.dhan import get_dhan_token
+                                dhan_token = get_dhan_token(active_cred, db_sess)
+                                if dhan_token:
+                                    from app.market_data import DhanMarketDataProvider
+                                    provider = DhanMarketDataProvider(client_id=active_cred.api_key, access_token=dhan_token)
+                                    today_str = now.strftime("%Y-%m-%d")
+                                    
+                                    # Resolve weekly option expiry
+                                    d = now.date()
+                                    days_to_tuesday = (1 - d.weekday()) % 7
+                                    if days_to_tuesday == 0:
+                                        days_to_tuesday = 7
+                                    tuesday = d + timedelta(days=days_to_tuesday)
+                                    
+                                    days_to_thursday = (3 - d.weekday()) % 7
+                                    if days_to_thursday == 0:
+                                        days_to_thursday = 7
+                                    thursday = d + timedelta(days=days_to_thursday)
+                                    
+                                    tuesday_str = tuesday.strftime("%Y-%m-%d")
+                                    thursday_str = thursday.strftime("%Y-%m-%d")
+                                    
+                                    resolved_expiry = None
+                                    sec_id_test = None
+                                    try:
+                                        sec_id_test = provider._resolve_option_security_id(symbol, float(state.selected_ce_strike), "CE", tuesday_str)
+                                    except Exception:
+                                        pass
+                                    
+                                    if sec_id_test:
+                                        resolved_expiry = tuesday_str
+                                    else:
+                                        resolved_expiry = thursday_str
+                                        
+                                    loop = asyncio.get_event_loop()
+                                    
+                                    # Fetch CE 9:15 candle
+                                    ce_candles = await loop.run_in_executor(None, lambda: provider.get_historical_data(
+                                        symbol=symbol,
+                                        days=1,
+                                        from_date=today_str,
+                                        to_date=today_str,
+                                        interval="minute",
+                                        instrument_type="CE",
+                                        strike_price=float(state.selected_ce_strike),
+                                        expiry_date=resolved_expiry
+                                    ))
+                                    if ce_candles:
+                                        for c in ce_candles:
+                                            if c["date"].split(" ")[1][:5] == "09:15":
+                                                real_ce_high = float(c["high"])
+                                                break
+                                                
+                                    # Fetch PE 9:15 candle
+                                    pe_candles = await loop.run_in_executor(None, lambda: provider.get_historical_data(
+                                        symbol=symbol,
+                                        days=1,
+                                        from_date=today_str,
+                                        to_date=today_str,
+                                        interval="minute",
+                                        instrument_type="PE",
+                                        strike_price=float(state.selected_pe_strike),
+                                        expiry_date=resolved_expiry
+                                    ))
+                                    if pe_candles:
+                                        for c in pe_candles:
+                                            if c["date"].split(" ")[1][:5] == "09:15":
+                                                real_pe_high = float(c["high"])
+                                                break
+                except Exception as ex:
+                    logger.warning(f"Failed to fetch live option opening candle high: {ex}")
+                
+                if real_ce_high is not None and real_ce_high > 0:
+                    state.ce_option_opening_high = real_ce_high
+                    logger.info(f"ORB [{strategy.name}] Locked real CE opening high from Dhan: {real_ce_high}")
+                else:
+                    state.ce_option_opening_high = round(max(0.5, max(0, state.opening_high - state.selected_ce_strike) + state.selected_ce_strike * 0.002), 2)
+                    logger.info(f"ORB [{strategy.name}] Using fallback mathematical CE opening high: {state.ce_option_opening_high}")
+                    
+                if real_pe_high is not None and real_pe_high > 0:
+                    state.pe_option_opening_high = real_pe_high
+                    logger.info(f"ORB [{strategy.name}] Locked real PE opening high from Dhan: {real_pe_high}")
+                else:
+                    state.pe_option_opening_high = round(max(0.5, max(0, state.selected_pe_strike - state.opening_low) + state.selected_pe_strike * 0.002), 2)
+                    logger.info(f"ORB [{strategy.name}] Using fallback mathematical PE opening high: {state.pe_option_opening_high}")
 
                 state.phase = "WAITING_BREAKOUT"
                 logger.info(f"ORB [{strategy.name}] Opening candle: H={candle['high']} L={candle['low']}. Selected CE={state.selected_ce_strike} (H={state.ce_option_opening_high}), PE={state.selected_pe_strike} (H={state.pe_option_opening_high})")
@@ -1688,8 +2015,8 @@ class ExecutionEngine:
                 now_time = now.time()
 
                 if self.telegram_bot:
-                    # 1. Pre-Market Broker Health Check (20 mins before start, at 08:55 AM)
-                    if time(8, 55) <= now_time <= time(9, 10):
+                    # 1. Pre-Market Broker Health Check (at or after 08:55 AM, before market opens at 09:15 AM)
+                    if time(8, 55) <= now_time <= time(9, 15):
                         if today_date not in self.pre_market_health_check_sent and self._get_system_state(f"pre_market_health_check_sent_{today_date}") != "true":
                             self.pre_market_health_check_sent[today_date] = True
                             self._set_system_state(f"pre_market_health_check_sent_{today_date}", "true")
@@ -1704,6 +2031,13 @@ class ExecutionEngine:
                                 )
                             else:
                                 logger.info("Pre-market broker health check passed successfully.")
+                                await self.telegram_bot.send_message(
+                                    f"🟢 <b>Pre-Market Health Check Passed</b>\n\n"
+                                    f"Stocker's pre-market connectivity verification succeeded:\n"
+                                    f"• <b>Status:</b> {detail}\n"
+                                    f"• <b>Time:</b> {now.strftime('%I:%M:%S %p')}\n\n"
+                                    f"💪 Automated strategies are authenticated and ready for market open."
+                                )
 
                     # 2. Start of Day notification (between 9:15 AM and 3:30 PM)
                     if time(9, 15) <= now_time <= time(15, 30):
@@ -1751,6 +2085,19 @@ class ExecutionEngine:
                             )
                         continue
 
+                    if self.paused:
+                        already_logged = any(
+                            log["strategy_id"] == strategy.id and "evaluation paused" in log["message"]
+                            for log in self.strategy_logs
+                        )
+                        if not already_logged:
+                            self.log_strategy_activity(
+                                strategy.id,
+                                strategy.name,
+                                f"[SYSTEM] Engine is PAUSED. Strategy evaluation suspended."
+                            )
+                        continue
+
                     config = strategy.get_config()
                     if not config:
                         continue
@@ -1791,10 +2138,29 @@ class ExecutionEngine:
                         if not active_trade:
                             await self.evaluate_strategy_entry(strategy, current_spot_price)
                         else:
-                            # Estimate option premium from spot
-                            current_opt_ltp = active_trade.entry_price * (1 + ((current_spot_price - 24500.0) / 24500.0) * 10)
-                            if current_opt_ltp < 1:
-                                current_opt_ltp = 1.0
+                            # Resolve dynamic LTP (Option premium vs Stock spot)
+                            if active_trade.option_type in ("CE", "PE"):
+                                real_opt_ltp = 0.0
+                                try:
+                                    opt_premiums = await self.get_live_option_premiums(
+                                        underlying_symbol=symbol,
+                                        options=[(active_trade.strike_price, active_trade.option_type)]
+                                    )
+                                    real_opt_ltp = opt_premiums.get((active_trade.strike_price, active_trade.option_type), 0.0)
+                                except Exception as prem_err:
+                                    logger.error(f"Failed to fetch live option premium for active trade {active_trade.id}: {prem_err}")
+                                
+                                if real_opt_ltp > 0.0:
+                                    current_opt_ltp = real_opt_ltp
+                                else:
+                                    # Fallback math estimation
+                                    spot_ref = 24500.0 if "NIFTY" in symbol and "BANK" not in symbol else 52000.0
+                                    current_opt_ltp = active_trade.entry_price * (1 + ((current_spot_price - spot_ref) / spot_ref) * 10)
+                                    if current_opt_ltp < 1.0:
+                                        current_opt_ltp = 1.0
+                            else:
+                                current_opt_ltp = current_spot_price
+                                
                             await self.evaluate_strategy_exit(strategy, active_trade, current_opt_ltp)
 
             except Exception as e:
