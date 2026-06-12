@@ -258,6 +258,8 @@ class BacktestRequest(BaseModel):
     slippage_pct: float = 0.0
     trail_sl_pct: Optional[float] = None
     charges_per_trade: float = 0.0
+    trigger_on_candle_high: bool = False
+
 
 class TelegramBacktestReportRequest(BaseModel):
     strategy_name: str
@@ -608,6 +610,7 @@ def _run_orb_backtest(payload: "BacktestRequest", config: Dict, session: Session
         slippage_pct=payload.slippage_pct,
         trail_sl_pct=payload.trail_sl_pct,
         charges_per_trade=payload.charges_per_trade,
+        trigger_on_candle_high=payload.trigger_on_candle_high,
     )
 
     # Inject interval/meta info

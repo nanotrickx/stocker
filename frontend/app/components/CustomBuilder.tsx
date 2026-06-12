@@ -36,6 +36,8 @@ interface CustomBuilderProps {
   setPremiumMax: (val: number) => void;
   postBreakoutTf: string;
   setPostBreakoutTf: (val: string) => void;
+  triggerOnCandleHigh: boolean;
+  setTriggerOnCandleHigh: (val: boolean) => void;
   // Custom indicator rules
   entryConditions: IndicatorCondition[];
   setEntryConditions: React.Dispatch<React.SetStateAction<IndicatorCondition[]>>;
@@ -64,6 +66,7 @@ export default function CustomBuilder({
   premiumMin, setPremiumMin,
   premiumMax, setPremiumMax,
   postBreakoutTf, setPostBreakoutTf,
+  triggerOnCandleHigh, setTriggerOnCandleHigh,
   entryConditions, setEntryConditions,
   exitConditions, setExitConditions,
   onDeploy, onCancel
@@ -311,25 +314,47 @@ export default function CustomBuilder({
             </div>
           </div>
 
-          {/* Timeframe */}
-          <div style={{ marginTop:'14px' }}>
-            <label style={LABEL}>Post 10:30 Candle Interval</label>
-            <div style={{ display:'flex', gap:'6px', marginTop:'6px' }}>
-              {[
-                { v:'3minute', l:'3 min' },
-                { v:'5minute', l:'5 min' },
-                { v:'15minute', l:'15 min' },
-              ].map(tf => (
-                <button key={tf.v} onClick={()=>setPostBreakoutTf(tf.v)}
-                  style={{
-                    padding:'6px 14px', borderRadius:'16px', fontSize:'12px', fontWeight:600, border:'none', cursor:'pointer',
-                    background: postBreakoutTf === tf.v ? '#F59E0B' : 'rgba(255,255,255,0.06)',
-                    color: postBreakoutTf === tf.v ? '#000' : 'var(--text-secondary)',
-                    transition:'all .15s ease',
-                  }}>
-                  {tf.l}
-                </button>
-              ))}
+          {/* Timeframe & Trigger Level */}
+          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '14px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={LABEL}>Post 10:30 Candle Interval</label>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {[
+                  { v: '3minute', l: '3 min' },
+                  { v: '5minute', l: '5 min' },
+                  { v: '15minute', l: '15 min' },
+                ].map(tf => (
+                  <button key={tf.v} onClick={() => setPostBreakoutTf(tf.v)}
+                    style={{
+                      padding: '6px 14px', borderRadius: '16px', fontSize: '12px', fontWeight: 600, border: 'none', cursor: 'pointer',
+                      background: postBreakoutTf === tf.v ? '#F59E0B' : 'rgba(255,255,255,0.06)',
+                      color: postBreakoutTf === tf.v ? '#000' : 'var(--text-secondary)',
+                      transition: 'all .15s ease',
+                    }}>
+                    {tf.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={LABEL}>Trigger Level</label>
+              <div style={{ display: 'flex', alignItems: 'center', height: '100%', minHeight: '32px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={triggerOnCandleHigh}
+                    onChange={e => setTriggerOnCandleHigh(e.target.checked)}
+                    style={{
+                      width: '18px',
+                      height: '18px',
+                      cursor: 'pointer',
+                      accentColor: '#F59E0B',
+                    }}
+                  />
+                  Trigger on Candle High/Low (vs Close)
+                </label>
+              </div>
             </div>
           </div>
         </div>

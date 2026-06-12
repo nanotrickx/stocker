@@ -220,14 +220,7 @@ class DhanBroker(BaseBroker):
                 sec_id = None
 
                 # Parse symbol to resolve Dhan security ID and segment
-                if symbol.startswith("NSE:"):
-                    underlying_clean = symbol.split(":")[-1].upper()
-                    if "BANK" in underlying_clean:
-                        sec_id = 25
-                    else:
-                        sec_id = 13
-                    segment = "IDX_I"
-                elif "_" in symbol:
+                if "_" in symbol:
                     try:
                         parts = symbol.split("_")
                         underlying = parts[0]
@@ -245,6 +238,13 @@ class DhanBroker(BaseBroker):
                     except Exception as e:
                         logger.error(f"DhanBroker: Failed to parse or resolve option symbol {symbol}: {e}")
                         continue
+                elif symbol.startswith("NSE:"):
+                    underlying_clean = symbol.split(":")[-1].upper()
+                    if "BANK" in underlying_clean:
+                        sec_id = 25
+                    else:
+                        sec_id = 13
+                    segment = "IDX_I"
                 else:
                     under_upper = symbol.upper()
                     if "BANK" in under_upper:

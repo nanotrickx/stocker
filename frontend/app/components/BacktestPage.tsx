@@ -4,7 +4,7 @@ import { createChart, CandlestickSeries, createSeriesMarkers, UTCTimestamp, Colo
 import { Play, AlertCircle, RefreshCw, BarChart2, TrendingUp, TrendingDown, BookOpen, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { API_BASE } from '../config';
 
-interface Strategy { id: string; name: string; }
+interface Strategy { id: string; name: string; config_json?: string; }
 interface JournalEntry { ts: string; action: string; price: number; qty?: number; pnl?: number; reason: string[]; note?: string; capital: number; }
 interface VizBar { ts: string; open: number; high: number; low: number; close: number; volume: number; signal: string; trade_state: string; indicators: Record<string, any>; }
 interface SimTrade { symbol: string; instrument_type: string; entry_time: string; exit_time: string; qty: number; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; exit_reason: string; gross_pnl?: number; charges?: number; index_breakout_time?: string | null; index_breakout_price?: number | null; option_breakout_time?: string | null; option_breakout_price?: number | null; }
@@ -358,6 +358,7 @@ export default function BacktestPage({ theme = 'dark' }: { theme?: string }) {
   const [slippagePct, setSlippagePct] = useState(0.0);
   const [trailSlPct, setTrailSlPct] = useState('');
   const [chargesPerTrade, setChargesPerTrade] = useState(40.0);
+  const [triggerOnCandleHigh, setTriggerOnCandleHigh] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -377,6 +378,23 @@ export default function BacktestPage({ theme = 'dark' }: { theme?: string }) {
     fetch(`${API_BASE}/api/strategies`).then(r => r.json()).then(d => { setStrategies(d); if (d.length > 0) setStratId(d[0].id); }).catch(() => { });
   }, []);
 
+  useEffect(() => {
+    if (!stratId) return;
+    const strat = strategies.find(s => s.id === stratId);
+    if (strat && strat.config_json) {
+      try {
+        const config = JSON.parse(strat.config_json);
+        if (config.risk && config.risk.trigger_on_candle_high !== undefined) {
+          setTriggerOnCandleHigh(!!config.risk.trigger_on_candle_high);
+        } else {
+          setTriggerOnCandleHigh(false);
+        }
+      } catch (e) {
+        setTriggerOnCandleHigh(false);
+      }
+    }
+  }, [stratId, strategies]);
+
   const run = async () => {
     if (!stratId) { setError('No strategy selected.'); return; }
     setRunning(true); setError(null); setResult(null);
@@ -392,6 +410,7 @@ export default function BacktestPage({ theme = 'dark' }: { theme?: string }) {
         slippage_pct: slippagePct,
         trail_sl_pct: parseFloat(trailSlPct) || undefined,
         charges_per_trade: chargesPerTrade,
+        trigger_on_candle_high: triggerOnCandleHigh,
       };
       if (instrType !== 'STOCK') { body.strike_price = parseFloat(strikePrice) || undefined; body.expiry_date = expiryDate || undefined; }
       if (dateMode === 'range' && fromDate && toDate) { body.from_date = fromDate; body.to_date = toDate; }
@@ -800,6 +819,29 @@ export default function BacktestPage({ theme = 'dark' }: { theme?: string }) {
           <label style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Charges / Trade (₹)</label>
           <input type="number" min={0} value={chargesPerTrade} onChange={e => setChargesPerTrade(Number(e.target.value))} className="input-glass" style={{ padding: '10px', fontSize: '13px' }} />
         </div>
+
+        {/* Trigger Level (ORB breakout only) */}
+        {stratId === 'orb_breakout' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>ORB Trigger Level</label>
+            <div style={{ display: 'flex', alignItems: 'center', height: '100%', minHeight: '38px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                <input
+                  type="checkbox"
+                  checked={triggerOnCandleHigh}
+                  onChange={e => setTriggerOnCandleHigh(e.target.checked)}
+                  style={{
+                    width: '18px',
+                    height: '18px',
+                    cursor: 'pointer',
+                    accentColor: 'var(--accent-yellow)',
+                  }}
+                />
+                Trigger on Candle High/Low
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Run button */}
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>

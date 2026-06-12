@@ -108,6 +108,7 @@ export default function StockerDashboard() {
   const [premiumMin, setPremiumMin] = useState(100);
   const [premiumMax, setPremiumMax] = useState(200);
   const [postBreakoutTf, setPostBreakoutTf] = useState('5minute');
+  const [triggerOnCandleHigh, setTriggerOnCandleHigh] = useState(false);
   
   // Custom Option strategy parameters
   const [strikeOffset, setStrikeOffset] = useState<number>(0);
@@ -480,6 +481,7 @@ export default function StockerDashboard() {
         const risk = config.risk || {};
         setSlPct(risk.stop_loss_pct || 10.0);
         setTargetPct(risk.target_pct || 10.0);
+        setTriggerOnCandleHigh(risk.trigger_on_candle_high || false);
         const optSel = config.option_selection || {};
         setPremiumMin(optSel.premium_min || 100);
         setPremiumMax(optSel.premium_max || 200);
@@ -531,6 +533,7 @@ export default function StockerDashboard() {
         risk: {
           target_pct: targetPct,
           stop_loss_pct: slPct,
+          trigger_on_candle_high: triggerOnCandleHigh,
         },
         action: {
           instrument_type: 'OPTION',
@@ -1317,6 +1320,8 @@ export default function StockerDashboard() {
               setPremiumMax={setPremiumMax}
               postBreakoutTf={postBreakoutTf}
               setPostBreakoutTf={setPostBreakoutTf}
+              triggerOnCandleHigh={triggerOnCandleHigh}
+              setTriggerOnCandleHigh={setTriggerOnCandleHigh}
               entryConditions={entryConditions}
               setEntryConditions={setEntryConditions}
               exitConditions={exitConditions}

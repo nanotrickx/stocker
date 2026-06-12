@@ -56,6 +56,7 @@ DEFAULT_ORB_CONFIG: Dict[str, Any] = {
     "risk": {
         "target_pct": 10.0,
         "stop_loss_pct": 10.0,
+        "trigger_on_candle_high": False,
     },
 
     # Order settings
@@ -131,6 +132,7 @@ class ORBStrategyEngine:
 
         self.target_pct = self.risk.get("target_pct", 10.0)
         self.sl_pct = self.risk.get("stop_loss_pct", 10.0)
+        self.trigger_on_candle_high = self.risk.get("trigger_on_candle_high", False)
         self.premium_min = self.opt_cfg.get("premium_min", 100)
         self.premium_max = self.opt_cfg.get("premium_max", 200)
         self.qty = self.action.get("quantity", 50)
@@ -209,6 +211,7 @@ class ORBStrategyEngine:
         slippage_pct: float = 0.0,
         trail_sl_pct: Optional[float] = None,
         charges_per_trade: float = 0.0,
+        trigger_on_candle_high: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Run ORB strategy bar-by-bar on an intraday DataFrame.
@@ -221,6 +224,8 @@ class ORBStrategyEngine:
         """
         if df.empty:
             return self._empty_result(initial_capital)
+
+        use_high = trigger_on_candle_high if trigger_on_candle_high is not None else self.trigger_on_candle_high
 
         capital = initial_capital
         equity_curve = []
@@ -481,14 +486,14 @@ class ORBStrategyEngine:
                     api_pe_candle = pe_price_map.get(bar_min_str)
 
                     if api_ce_candle:
-                        real_ce_prem = api_ce_candle["close"]
+                        real_ce_prem = api_ce_candle["high"] if use_high else api_ce_candle["close"]
                     elif current_snapshot:
                         for opt in current_snapshot.get("chain", []):
                             if opt["strike"] == state.selected_ce_strike:
                                 real_ce_prem = opt["CE_price"]
 
                     if api_pe_candle:
-                        real_pe_prem = api_pe_candle["close"]
+                        real_pe_prem = api_pe_candle["high"] if use_high else api_pe_candle["close"]
                     elif current_snapshot:
                         for opt in current_snapshot.get("chain", []):
                             if opt["strike"] == state.selected_pe_strike:
